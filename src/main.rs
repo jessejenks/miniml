@@ -1,3 +1,69 @@
-fn main() {
-    println!("Hello, world!");
+mod ast;
+mod elaborate;
+mod lexer;
+mod parser;
+mod surface;
+
+use crate::elaborate::surface_to_core;
+use crate::lexer::Lexer;
+use crate::parser::Parser;
+use clap::Parser as _;
+use miette::{NamedSource, Report};
+use std::path::Path;
+
+#[derive(clap::Parser, Debug)]
+struct Args {
+    /// Input File
+    #[arg(required = true)]
+    path: String,
+    /// Run the lexer
+    #[arg(long)]
+    lex: bool,
+    /// Run the parser
+    #[arg(long)]
+    parse: bool,
+    /// Run the elaborator
+    #[arg(long)]
+    elab: bool,
+}
+
+fn main() -> miette::Result<()> {
+    let args = Args::parse();
+    let input = Path::new(&args.path);
+
+    let source = match std::fs::read_to_string(input) {
+        Err(e) => {
+            eprintln!("failed to read file: {e}");
+            std::process::exit(1)
+        }
+        Ok(s) => s,
+    };
+
+    if args.lex {
+        let lexer = Lexer::new(&source);
+        for span in lexer {
+            match span {
+                Err(e) => {
+                    return Err(Report::new(e)
+                        .with_source_code(NamedSource::new(&args.path, source.clone())));
+                }
+                Ok((start, tok, end)) => println!("{tok:?} ({start}, {end})"),
+            }
+        }
+        return Ok(());
+    }
+
+    let program = Parser::parse(&source).map_err(|e| {
+        Report::new(e).with_source_code(NamedSource::new(&args.path, source.clone()))
+    })?;
+    if args.parse {
+        println!("{program}");
+        return Ok(());
+    }
+
+    let elaborated_program = surface_to_core(program);
+    if args.elab {
+        println!("{elaborated_program}");
+    }
+    Ok(())
 }
