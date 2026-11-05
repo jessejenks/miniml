@@ -1,15 +1,18 @@
 mod ast;
+mod codegen;
 mod elaborate;
 mod interpret;
 mod lexer;
 mod parser;
 mod surface;
 
+use crate::codegen::Compiler;
 use crate::elaborate::surface_to_core;
 use crate::interpret::interpret;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use clap::Parser as _;
+use inkwell::context::Context;
 use miette::{NamedSource, Report};
 use std::path::Path;
 
@@ -30,6 +33,9 @@ struct Args {
     /// Run the interpreter
     #[arg(long)]
     interpret: bool,
+    /// Output to LLVM
+    #[arg(long)]
+    codegen: bool,
 }
 
 fn main() -> miette::Result<()> {
@@ -76,5 +82,15 @@ fn main() -> miette::Result<()> {
         let interpreted = interpret(&elaborated_program);
         println!("{interpreted}");
     }
+
+    if args.codegen {
+        let context = Context::create();
+        let mut compiler = Compiler::new(&context);
+        compiler
+            .compile(&elaborated_program)
+            .map_err(|e| miette::miette!("codegen: {e}"))?;
+        print!("{}", compiler.ir());
+    }
+
     Ok(())
 }

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }
+inkwell = { version = "0.11.0", default-features = false, features = ["llvm21-1-prefer-dynamic", "target-x86", "target-aarch64"] }
 miette = { version = "7.6.0", features = ["derive", "fancy"] }
 thiserror = "2.0.21"
 
