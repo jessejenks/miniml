@@ -442,6 +442,63 @@ impl<'ctx> Compiler<'ctx> {
         self.appterm(value)
     }
 
+    fn insert_block(&self) -> BasicBlock<'ctx> {
+        self.builder
+            .get_insert_block()
+            .expect("builder is positioned")
+    }
+
+    fn branch_on_bool(
+        &self,
+        condition: IntValue<'ctx>,
+        name: &str,
+    ) -> Result<(BasicBlock<'ctx>, BasicBlock<'ctx>)> {
+        let unboxed = self.unbox_int(condition)?;
+        let is_true = self.builder.build_int_compare(
+            IntPredicate::NE,
+            unboxed,
+            self.word.const_zero(),
+            "is_true",
+        )?;
+        let function = self
+            .insert_block()
+            .get_parent()
+            .expect("builder is inside a function");
+        let then_block = self
+            .context
+            .append_basic_block(function, &format!("{name}.then"));
+        let else_block = self
+            .context
+            .append_basic_block(function, &format!("{name}.else"));
+        self.builder
+            .build_conditional_branch(is_true, then_block, else_block)?;
+        Ok((then_block, else_block))
+    }
+
+    fn merge(
+        &self,
+        name: &str,
+        branches: [(IntValue<'ctx>, BasicBlock<'ctx>); 2],
+    ) -> Result<IntValue<'ctx>> {
+        let function = self
+            .insert_block()
+            .get_parent()
+            .expect("builder is inside a function");
+        let merge = self
+            .context
+            .append_basic_block(function, &format!("{name}.end"));
+        for (_, block) in branches {
+            self.builder.position_at_end(block);
+            self.builder.build_unconditional_branch(merge)?;
+        }
+        self.builder.position_at_end(merge);
+        let phi = self.builder.build_phi(self.word, name)?;
+        for (value, block) in branches {
+            phi.add_incoming(&[(&value, block)]);
+        }
+        Ok(phi.as_basic_value().into_int_value())
+    }
+
     pub fn ir(&self) -> String {
         self.module.print_to_string().to_string()
     }
@@ -499,7 +556,20 @@ impl<'ctx> Compiler<'ctx> {
                 self.end_let()?;
                 Ok(result)
             }
-            ast::ExprKind::IfElse(condition, consequence, alternative) => todo!(),
+            ast::ExprKind::IfElse(condition, consequence, alternative) => {
+                let condition = self.compile_expression(condition)?;
+                let (then_block, else_block) = self.branch_on_bool(condition, "if")?;
+
+                self.builder.position_at_end(then_block);
+                let then_value = self.compile_expression(consequence)?;
+                let then_end = self.insert_block();
+
+                self.builder.position_at_end(else_block);
+                let else_value = self.compile_expression(alternative)?;
+                let else_end = self.insert_block();
+
+                self.merge("if", [(then_value, then_end), (else_value, else_end)])
+            }
         }
     }
 
@@ -538,7 +608,15 @@ impl<'ctx> Compiler<'ctx> {
                 self.update(value)?;
                 self.compile_expression_tail(body)
             }
-            ast::ExprKind::IfElse(condition, consequence, alternative) => todo!(),
+            // no merge block for tail
+            ast::ExprKind::IfElse(condition, consequence, alternative) => {
+                let condition = self.compile_expression(condition)?;
+                let (then_block, else_block) = self.branch_on_bool(condition, "if")?;
+                self.builder.position_at_end(then_block);
+                self.compile_expression_tail(consequence)?;
+                self.builder.position_at_end(else_block);
+                self.compile_expression_tail(alternative)
+            }
         }
     }
 
@@ -678,6 +756,29 @@ mod tests {
         agrees(
             "let rec count = fun n => n (fun _ => 0) (fun _ => 1 + count (fun x => fun y => x)) 0;
             (fun x => { let rec g = fun y => x + y; g 10 }) (count (fun x => fun y => y))",
+        );
+        agrees("if 1 < 2 then 3 else 4");
+        agrees("(if false then 1 else 2) + 10");
+        agrees("(fun x => if x then 1 else 2) false");
+        agrees("if if true then false else true then 1 else 2");
+        agrees("(if 1 < 2 then { let x = 5; x } else 0) + { let y = 1; y }");
+        agrees("let rec f = fun n => if n == 0 then 1 else n * f (n - 1); f 3");
+        agrees("let rec f = fun n => if n == 0 then 1 else n * f (n - 1); f 5");
+        agrees(
+            "let rec sum = fun acc => fun n => if n == 0 then acc else sum (acc + n) (n - 1);
+            sum 0 100",
+        );
+    }
+
+    #[test]
+    fn deep_tail_recursion() {
+        // too deep for the interpreter
+        assert_eq!(
+            run(
+                "let rec sum = fun acc => fun n => if n == 0 then acc else sum (acc + n) (n - 1);
+                sum 0 1000000"
+            ),
+            500_000_500_000
         );
     }
 }
