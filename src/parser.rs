@@ -316,12 +316,20 @@ impl<'a> Parser<'a> {
 
     fn abstraction(&mut self, start: usize) -> Result<surface::Expr<'a>, ParseError> {
         // already read `fun`
-        let variable = self.expect_identifier()?;
-        self.expect(Token::WideArrow)?;
+        let mut variables = Vec::new();
+        if !self.chomp_if_next_is(Token::WideArrow)? {
+            loop {
+                variables.push(self.expect_identifier()?);
+                if !self.chomp_if_next_is(Token::Comma)? {
+                    break;
+                }
+            }
+            self.expect(Token::WideArrow)?;
+        }
         let body = self.expression(0)?;
         let end = body.span.end;
         Ok(surface::Expr::new(
-            surface::ExprKind::Abstraction(variable, Box::new(body)),
+            surface::ExprKind::Abstraction(variables, Box::new(body)),
             start,
             end,
         ))
@@ -523,6 +531,11 @@ mod tests {
             parse("let rec f = fun n => if n == 0 then 1 else n * f (n - 1); f").to_string(),
             "(let rec f = (fun n => (if (n == 0) then 1 else (n * (f (n - 1))))); f)"
         );
+        assert_eq!(parse("fun => 1").to_string(), "(fun => 1)");
+        assert_eq!(
+            parse("fun x, y, z => x + y + z").to_string(),
+            "(fun x, y, z => ((x + y) + z))"
+        );
     }
 
     #[test]
@@ -580,7 +593,6 @@ mod tests {
     fn bad_binders() {
         assert_expecting("let x 1", "Int(1)", "Equal", 6..7);
         assert_expecting("let let = 1", "Keyword(Let)", "identifier", 4..7);
-        assert_expecting("fun => x", "WideArrow", "identifier", 4..6);
         assert_expecting("fun x x", "Identifier(\"x\")", "WideArrow", 6..7);
         assert_eof("fun x =>");
     }

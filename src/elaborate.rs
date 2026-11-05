@@ -18,11 +18,29 @@ fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) 
             Box::new(surface_to_core_inner(scope, *f)),
             Box::new(surface_to_core_inner(scope, *x)),
         ),
-        surface::ExprKind::Abstraction(x, body) => {
-            scope.push(if x.name == "_" { "" } else { x.name });
-            let body_elabed = surface_to_core_inner(scope, *body);
+        surface::ExprKind::Abstraction(xs, body) => {
+            let binders: Vec<(&str, Option<ast::Span>)> = if xs.is_empty() {
+                vec![("", None)]
+            } else {
+                xs.iter()
+                    .map(|x| (if x.name == "_" { "" } else { x.name }, Some(x.span)))
+                    .collect()
+            };
+            for (name, _) in &binders {
+                scope.push(name);
+            }
+            let mut inner = surface_to_core_inner(scope, *body);
+            for (_, span) in binders[1..].iter().rev() {
+                scope.pop();
+                let start = span.map_or(inner.span.start, |s| s.start);
+                let end = inner.span.end;
+                inner = ast::Expr {
+                    kind: ast::ExprKind::Abstraction(*span, Box::new(inner)),
+                    span: (start..end).into(),
+                }
+            }
             scope.pop();
-            ast::ExprKind::Abstraction(Some(x.span), Box::new(body_elabed))
+            ast::ExprKind::Abstraction(binders[0].1, Box::new(inner))
         }
         surface::ExprKind::LetIn(is_rec, x, expr, body) => {
             let (expr_elabed, body_elabed) = if is_rec {
@@ -95,7 +113,10 @@ mod tests {
         assert_eq!(elab("false").to_string(), "false");
         assert_eq!(elab("1").to_string(), "1");
         assert_eq!(elab("fun x => x").to_string(), "(λ.#0)");
+        assert_eq!(elab("fun x => fun y => x").to_string(), "(λ.(λ.#1))");
+        assert_eq!(elab("fun x, y => x").to_string(), "(λ.(λ.#1))");
         assert_eq!(elab("fun x => fun x => x").to_string(), "(λ.(λ.#0))");
+        assert_eq!(elab("fun x, x => x").to_string(), "(λ.(λ.#0))");
         assert_eq!(elab("(fun _ => b) a").to_string(), "((λ.b) a)");
         assert_eq!(elab("fun _ => _").to_string(), "(λ._)");
         assert_eq!(elab("fun x => fun _ => x").to_string(), "(λ.(λ.#1))");

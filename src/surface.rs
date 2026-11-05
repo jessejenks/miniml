@@ -12,7 +12,7 @@ pub enum ExprKind<'a> {
     Int(i64),
     Variable(&'a str),
     Application(Box<Expr<'a>>, Box<Expr<'a>>),
-    Abstraction(Identifier<'a>, Box<Expr<'a>>),
+    Abstraction(Vec<Identifier<'a>>, Box<Expr<'a>>),
     LetIn(bool, Identifier<'a>, Box<Expr<'a>>, Box<Expr<'a>>),
     IfElse(Box<Expr<'a>>, Box<Expr<'a>>, Box<Expr<'a>>),
     Unary(UnaryOp, Box<Expr<'a>>),
@@ -28,7 +28,20 @@ impl Display for ExprKind<'_> {
             ExprKind::Int(n) => write!(f, "{n}"),
             ExprKind::Variable(x) => write!(f, "{x}"),
             ExprKind::Application(left, right) => write!(f, "({left} {right})"),
-            ExprKind::Abstraction(x, body) => write!(f, "(fun {} => {body})", x.name),
+            ExprKind::Abstraction(xs, body) => {
+                if xs.is_empty() {
+                    write!(f, "(fun => {body})")
+                } else {
+                    write!(f, "(fun ")?;
+                    for (i, x) in xs.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", x.name)?;
+                    }
+                    write!(f, " => {body})")
+                }
+            }
             ExprKind::LetIn(is_rec, x, expr, body) => write!(
                 f,
                 "(let {}{} = {expr}; {body})",
