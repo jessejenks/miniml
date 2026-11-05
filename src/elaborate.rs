@@ -11,7 +11,7 @@ fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) 
         surface::ExprKind::Bool(b) => ast::ExprKind::Bool(b),
         surface::ExprKind::Int(n) => ast::ExprKind::Int(n),
         surface::ExprKind::Variable(x) => match scope.iter().rev().position(|&n| n == x) {
-            Some(index) => ast::ExprKind::BoundVariable(index),
+            Some(index) => ast::ExprKind::BoundVariable(i64::try_from(index).unwrap()),
             None => ast::ExprKind::FreeVariable(x.to_string()),
         },
         surface::ExprKind::Application(f, x) => ast::ExprKind::Application(

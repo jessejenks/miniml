@@ -216,7 +216,7 @@ impl<'a> Parser<'a> {
             let Some(op) = token_to_binary_op(&tok) else {
                 break;
             };
-            let (lbp, rbp, assoc) = Self::infix_binding_power(&op);
+            let (lbp, rbp, assoc) = Self::infix_binding_power(op);
             if lbp <= min_bp {
                 break;
             }
@@ -234,7 +234,7 @@ impl<'a> Parser<'a> {
                 && let Some((peek_start, peek, peek_end)) = self.peek()?
                 && let Some(peek_op) = token_to_binary_op(&peek)
                 && matches!(
-                    Self::infix_binding_power(&peek_op),
+                    Self::infix_binding_power(peek_op),
                     (l, _, _) if l == lbp
                 )
             {
@@ -371,7 +371,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn infix_binding_power(op: &BinaryOp) -> (u8, u8, bool) {
+    fn infix_binding_power(op: BinaryOp) -> (u8, u8, bool) {
         match op {
             BinaryOp::Or => (1, 2, true),
             BinaryOp::And => (3, 4, true),

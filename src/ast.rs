@@ -30,7 +30,7 @@ impl From<Span> for miette::SourceSpan {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum UnaryOp {
     Negate,
     BitNot,
@@ -47,7 +47,7 @@ impl Display for UnaryOp {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -89,7 +89,7 @@ pub enum ExprKind {
     Unit,
     Bool(bool),
     Int(i64),
-    BoundVariable(usize),
+    BoundVariable(i64),
     FreeVariable(String),
     Application(Box<Expr>, Box<Expr>),
     Abstraction(Option<Span>, Box<Expr>),

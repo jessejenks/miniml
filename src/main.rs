@@ -1,10 +1,12 @@
 mod ast;
 mod elaborate;
+mod interpret;
 mod lexer;
 mod parser;
 mod surface;
 
 use crate::elaborate::surface_to_core;
+use crate::interpret::interpret;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use clap::Parser as _;
@@ -25,6 +27,9 @@ struct Args {
     /// Run the elaborator
     #[arg(long)]
     elab: bool,
+    /// Run the interpreter
+    #[arg(long)]
+    interpret: bool,
 }
 
 fn main() -> miette::Result<()> {
@@ -64,6 +69,12 @@ fn main() -> miette::Result<()> {
     let elaborated_program = surface_to_core(program);
     if args.elab {
         println!("{elaborated_program}");
+        return Ok(());
+    }
+
+    if args.interpret {
+        let interpreted = interpret(&elaborated_program);
+        println!("{interpreted}");
     }
     Ok(())
 }

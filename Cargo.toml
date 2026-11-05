@@ -11,3 +11,4 @@ thiserror = "2.0.21"
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 too_many_lines = "allow"
+struct_excessive_bools = "allow"
