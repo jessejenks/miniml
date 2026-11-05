@@ -637,6 +637,9 @@ impl<'ctx> Compiler<'ctx> {
                 };
                 self.box_int(result)
             }
+            ast::ExprKind::Binary(op @ (ast::BinaryOp::And | ast::BinaryOp::Or), left, right) => {
+                self.compile_short_circuit(*op, left, right)
+            }
             ast::ExprKind::Binary(op, left, right) => {
                 let l = self.compile_expression(left)?;
                 let l = self.unbox_int(l)?;
@@ -653,13 +656,40 @@ impl<'ctx> Compiler<'ctx> {
                     ast::BinaryOp::Lte => self.compare(IntPredicate::SLE, l, r)?,
                     ast::BinaryOp::Gte => self.compare(IntPredicate::SGE, l, r)?,
                     ast::BinaryOp::Eq => self.compare(IntPredicate::EQ, l, r)?,
-                    ast::BinaryOp::BitAnd | ast::BinaryOp::And => b.build_and(l, r, "and")?,
-                    ast::BinaryOp::BitOr | ast::BinaryOp::Or => b.build_or(l, r, "or")?,
+                    ast::BinaryOp::BitAnd => b.build_and(l, r, "and")?,
+                    ast::BinaryOp::BitOr => b.build_or(l, r, "or")?,
+                    ast::BinaryOp::And | ast::BinaryOp::Or => unreachable!("short-circuits"),
                 };
                 self.box_int(result)
             }
             _ => unreachable!("not a primitive: {expr}"),
         }
+    }
+
+    fn compile_short_circuit(
+        &mut self,
+        op: ast::BinaryOp,
+        left: &ast::Expr,
+        right: &ast::Expr,
+    ) -> Result<IntValue<'ctx>> {
+        let l = self.compile_expression(left)?;
+        let name = if op == ast::BinaryOp::And {
+            "and"
+        } else {
+            "or"
+        };
+        let (then_block, else_block) = self.branch_on_bool(l, name)?;
+        let (right_block, short_block) = if op == ast::BinaryOp::And {
+            (then_block, else_block)
+        } else {
+            (else_block, then_block)
+        };
+
+        self.builder.position_at_end(right_block);
+        let r = self.compile_expression(right)?;
+        let right_end = self.insert_block();
+
+        self.merge(name, [(l, short_block), (r, right_end)])
     }
 
     fn compare(
@@ -768,6 +798,13 @@ mod tests {
             "let rec sum = fun acc => fun n => if n == 0 then acc else sum (acc + n) (n - 1);
             sum 0 100",
         );
+        agrees("if true && 2 < 1 then 1 else 2");
+        agrees("if false || 1 < 2 then 1 else 2");
+        agrees("let x = 2; if x > 0 && (x < 10 || x == 100) then x else 0");
+        agrees("(fun b => if b && b || !b then 1 else 2) false");
+        // short-circuit
+        agrees("if false && (1 2) == 0 then 1 else 2");
+        agrees("if true || ((fun x => x x) (fun x => x x)) == 0 then 1 else 2");
     }
 
     #[test]
