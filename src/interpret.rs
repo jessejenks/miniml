@@ -163,10 +163,13 @@ fn cbv(expr: Expr) -> Expr {
             let left_val = cbv(*left);
             // mu
             let right_val = cbv(*right);
-            if let Expr::Abstraction(body) = left_val {
-                cbv(beta(*body, right_val))
-            } else {
-                Expr::Application(Box::new(left_val), Box::new(right_val))
+            match left_val {
+                Expr::Abstraction(body) => cbv(beta(*body, right_val)),
+                Expr::FreeVariable(n) if n == "print" => {
+                    println!("{right_val}");
+                    Expr::Unit
+                }
+                l => Expr::Application(Box::new(l), Box::new(right_val)),
             }
         }
         Expr::LetIn(is_rec, expr, body) => {
@@ -297,5 +300,8 @@ mod tests {
             .to_string(),
             "(λ.(if (< #0 2) then 1 else (* #0 ((let rec (λ.(if (< #0 2) then 1 else (* #0 (#1 (- #0 1))))) in #0) (- #0 1)))))"
         );
+        assert_eq!(interp("print 3; 4").to_string(), "4");
+        assert_eq!(interp("let p = print; p 1; p 2; 5").to_string(), "5");
+        assert_eq!(interp("(fun f => { f 6; 7 }) print").to_string(), "7");
     }
 }

@@ -7,10 +7,26 @@ use inkwell::{
     types::{FunctionType, IntType, PointerType, StructType},
     values::{CallSiteValue, FunctionValue, GlobalValue, IntValue, LLVMTailCallKind, PointerValue},
 };
+use miette::{Diagnostic, SourceSpan};
+use thiserror::Error;
 
 use crate::ast;
 
-type Result<T> = std::result::Result<T, BuilderError>;
+#[derive(Debug, Error, Diagnostic)]
+pub enum CodegenError {
+    #[error("LLVM builder error: {0}")]
+    #[diagnostic(code(codegen::llvm))]
+    Builder(#[from] BuilderError),
+    #[error("unknown variable `{name}`")]
+    #[diagnostic(code(codegen::unknown_variable), help("the only builtin is `print`"))]
+    UnknownVariable {
+        name: String,
+        #[label("not defined")]
+        span: SourceSpan,
+    },
+}
+
+type Result<T> = std::result::Result<T, CodegenError>;
 
 const TAIL_CC: u32 = 18;
 
@@ -21,6 +37,8 @@ pub struct Compiler<'ctx> {
     malloc: FunctionValue<'ctx>,
     cons_fn: FunctionValue<'ctx>,
     closure_fn: FunctionValue<'ctx>,
+    printf: FunctionValue<'ctx>,
+    print_fn: FunctionValue<'ctx>,
     word: IntType<'ctx>,
     ptr_type: PointerType<'ctx>,
     list_type: StructType<'ctx>,
@@ -38,6 +56,12 @@ impl<'ctx> Compiler<'ctx> {
         let ptr_type = context.ptr_type(AddressSpace::default());
 
         let malloc = module.add_function("malloc", ptr_type.fn_type(&[word.into()], false), None);
+        // declare i32 @printf(ptr, ...)
+        let printf = module.add_function(
+            "printf",
+            context.i32_type().fn_type(&[ptr_type.into()], true),
+            None,
+        );
 
         let list_type = context.opaque_struct_type("list");
         list_type.set_body(&[word.into(), ptr_type.into()], false);
@@ -59,6 +83,10 @@ impl<'ctx> Compiler<'ctx> {
 
         let lambda_type = word.fn_type(&[ptr_type.into()], false);
 
+        // The global print function. printf is the libc function
+        let print_fn = module.add_function("print", lambda_type, Some(Linkage::Internal));
+        print_fn.set_call_conventions(TAIL_CC);
+
         let arg_stack = module.add_global(ptr_type, None, "ARGS");
         arg_stack.set_initializer(&ptr_type.const_null());
         arg_stack.set_linkage(Linkage::Internal);
@@ -72,6 +100,8 @@ impl<'ctx> Compiler<'ctx> {
             malloc,
             cons_fn,
             closure_fn,
+            printf,
+            print_fn,
             word,
             ptr_type,
             list_type,
@@ -87,6 +117,7 @@ impl<'ctx> Compiler<'ctx> {
     fn initialize(&mut self) -> Result<()> {
         self.define_cons()?;
         self.define_closure()?;
+        self.define_print()?;
         Ok(())
     }
 
@@ -153,6 +184,43 @@ impl<'ctx> Compiler<'ctx> {
 
         self.builder.build_return(Some(&closure))?;
         Ok(())
+    }
+
+    /// define internal tailcc i64 @print(ptr %env)
+    /// Effectively `fun n => { printf("%lld\n", n); () }`
+    fn define_print(&mut self) -> Result<()> {
+        let f = self.print_fn;
+        self.builder
+            .position_at_end(self.context.append_basic_block(f, "entry"));
+        let env = f.get_first_param().unwrap().into_pointer_value();
+        env.set_name("env");
+        self.env_slot = Some(self.new_env_slot(env)?);
+
+        let n = self.access(0)?;
+        let n = self.unbox_int(n)?;
+        let format = self
+            .builder
+            .build_global_string_ptr("%lld\n", "print.format")?;
+        self.builder.build_direct_call(
+            self.printf,
+            &[format.as_pointer_value().into(), n.into()],
+            "",
+        )?;
+        let unit = self.box_const(0)?;
+        self.ret(unit)?;
+
+        self.env_slot = None;
+        Ok(())
+    }
+
+    fn free_variable(&self, name: &str, span: ast::Span) -> Result<IntValue<'ctx>> {
+        match name {
+            "print" => self.cur(self.print_fn),
+            _ => Err(CodegenError::UnknownVariable {
+                name: name.to_string(),
+                span: span.into(),
+            }),
+        }
     }
 
     /// %cell = call ptr @cons(i64 head, ptr tail)
@@ -326,8 +394,9 @@ impl<'ctx> Compiler<'ctx> {
             .try_as_basic_value()
             .expect_basic("closure returns a value")
             .into_pointer_value();
-        self.builder
-            .build_ptr_to_int(closure, self.word, "closure.value")
+        Ok(self
+            .builder
+            .build_ptr_to_int(closure, self.word, "closure.value")?)
     }
 
     fn apply(&self, closure: IntValue<'ctx>) -> Result<IntValue<'ctx>> {
@@ -527,7 +596,7 @@ impl<'ctx> Compiler<'ctx> {
             | ast::ExprKind::Unary(..)
             | ast::ExprKind::Binary(..) => self.compile_primitive(expr),
             ast::ExprKind::BoundVariable(n) => self.access(*n),
-            ast::ExprKind::FreeVariable(_) => todo!(),
+            ast::ExprKind::FreeVariable(name) => self.free_variable(name, expr.span),
             ast::ExprKind::Application(left, right) => {
                 self.pushmark()?;
                 let arg = self.compile_expression(right)?;
@@ -580,11 +649,11 @@ impl<'ctx> Compiler<'ctx> {
             | ast::ExprKind::Int(_)
             | ast::ExprKind::Unary(..)
             | ast::ExprKind::Binary(..)
-            | ast::ExprKind::BoundVariable(_) => {
+            | ast::ExprKind::BoundVariable(_)
+            | ast::ExprKind::FreeVariable(_) => {
                 let value = self.compile_expression(expr)?;
                 self.ret(value)
             }
-            ast::ExprKind::FreeVariable(_) => todo!(),
             ast::ExprKind::Application(left, right) => {
                 let arg = self.compile_expression(right)?;
                 self.push(arg)?;
@@ -699,7 +768,7 @@ impl<'ctx> Compiler<'ctx> {
         r: IntValue<'ctx>,
     ) -> Result<IntValue<'ctx>> {
         let bit = self.builder.build_int_compare(predicate, l, r, "cmp")?;
-        self.builder.build_int_z_extend(bit, self.word, "bool")
+        Ok(self.builder.build_int_z_extend(bit, self.word, "bool")?)
     }
 
     fn box_const(&self, n: i64) -> Result<IntValue<'ctx>> {
@@ -709,12 +778,12 @@ impl<'ctx> Compiler<'ctx> {
     fn box_int(&self, n: IntValue<'ctx>) -> Result<IntValue<'ctx>> {
         let one = self.word.const_int(1, false);
         let shifted = self.builder.build_left_shift(n, one, "shl")?;
-        self.builder.build_or(shifted, one, "boxed")
+        Ok(self.builder.build_or(shifted, one, "boxed")?)
     }
 
     fn unbox_int(&self, v: IntValue<'ctx>) -> Result<IntValue<'ctx>> {
         let one = self.word.const_int(1, false);
-        self.builder.build_right_shift(v, one, true, "unboxed")
+        Ok(self.builder.build_right_shift(v, one, true, "unboxed")?)
     }
 }
 
@@ -805,6 +874,21 @@ mod tests {
         // short-circuit
         agrees("if false && (1 2) == 0 then 1 else 2");
         agrees("if true || ((fun x => x x) (fun x => x x)) == 0 then 1 else 2");
+        // print. output isn't checked
+        agrees("print 3; 4");
+        agrees("let p = print; p 1; p 2; 5");
+        agrees("(fun f => { f 6; 7 }) print");
+    }
+
+    #[test]
+    fn unknown_variable() {
+        let program = surface_to_core(Parser::parse("1 + foo").unwrap());
+        let context = Context::create();
+        let mut compiler = Compiler::new(&context, "test").unwrap();
+        assert!(matches!(
+            compiler.compile(&program),
+            Err(CodegenError::UnknownVariable { name, .. }) if name == "foo"
+        ));
     }
 
     #[test]

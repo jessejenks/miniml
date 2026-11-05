@@ -85,11 +85,10 @@ fn main() -> miette::Result<()> {
 
     if args.codegen {
         let context = Context::create();
-        let mut compiler =
-            Compiler::new(&context, &args.path).map_err(|e| miette::miette!("codegen: {e}"))?;
-        compiler
-            .compile(&elaborated_program)
-            .map_err(|e| miette::miette!("codegen: {e}"))?;
+        let with_source =
+            |e| Report::new(e).with_source_code(NamedSource::new(&args.path, source.clone()));
+        let mut compiler = Compiler::new(&context, &args.path).map_err(with_source)?;
+        compiler.compile(&elaborated_program).map_err(with_source)?;
         print!("{}", compiler.ir());
     }
 
