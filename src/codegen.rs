@@ -235,6 +235,11 @@ impl<'ctx> Compiler<'ctx> {
             .into_pointer_value())
     }
 
+    fn store_env(&self, env: PointerValue<'ctx>) -> Result<()> {
+        self.builder.build_store(self.env_slot(), env)?;
+        Ok(())
+    }
+
     /// %env.slot = alloca ptr; store initial
     fn new_env_slot(&self, initial: PointerValue<'ctx>) -> Result<PointerValue<'ctx>> {
         let slot = self.builder.build_alloca(self.ptr_type, "env.slot")?;
@@ -281,6 +286,20 @@ impl<'ctx> Compiler<'ctx> {
             list = self.tail(list)?;
         }
         self.head(list)
+    }
+
+    /// env = cons(accu, env)
+    fn let_in(&self, value: IntValue<'ctx>) -> Result<()> {
+        let env = self.load_env()?;
+        let cell = self.cons(value, env)?;
+        self.store_env(cell)
+    }
+
+    /// env = env.tail
+    fn end_let(&self) -> Result<()> {
+        let env = self.load_env()?;
+        let tail = self.tail(env)?;
+        self.store_env(tail)
     }
 
     fn cur(&self, function: FunctionValue<'ctx>) -> Result<IntValue<'ctx>> {
@@ -450,7 +469,14 @@ impl<'ctx> Compiler<'ctx> {
                 self.end_function(block, env);
                 self.cur(func)
             }
-            ast::ExprKind::LetIn(is_rec, _, expr, body) => todo!(),
+            ast::ExprKind::LetIn(false, _, expr, body) => {
+                let value = self.compile_expression(expr)?;
+                self.let_in(value)?;
+                let result = self.compile_expression(body)?;
+                self.end_let()?;
+                Ok(result)
+            }
+            ast::ExprKind::LetIn(true, _, expr, body) => todo!(),
             ast::ExprKind::IfElse(condition, consequence, alternative) => todo!(),
         }
     }
@@ -479,7 +505,12 @@ impl<'ctx> Compiler<'ctx> {
                 self.end_function(block, env);
                 self.grab(func)
             }
-            ast::ExprKind::LetIn(is_rec, _, expr, body) => todo!(),
+            ast::ExprKind::LetIn(false, _, expr, body) => {
+                let value = self.compile_expression(expr)?;
+                self.let_in(value)?;
+                self.compile_expression_tail(body)
+            }
+            ast::ExprKind::LetIn(true, _, expr, body) => todo!(),
             ast::ExprKind::IfElse(condition, consequence, alternative) => todo!(),
         }
     }
@@ -605,5 +636,11 @@ mod tests {
         agrees(
             "(fun x => fun y => fun z => x z (y z)) (fun x => fun _ => x) (fun x => fun _ => x) 7",
         );
+        agrees("let x = 1; x + x");
+        agrees("let x = 1; let y = 2; x - y");
+        agrees("let x = 1; let x = x + 10; x");
+        agrees("let k = fun x => fun y => x; let f = k 1; f 2");
+        agrees("(fun x => { let y = x + 1; y * 2 }) 3");
+        agrees("let a = 1; 10 * { let b = 2; b } + a");
     }
 }
