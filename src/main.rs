@@ -44,6 +44,9 @@ struct Args {
     /// Output to LLVM
     #[arg(long)]
     codegen: bool,
+    /// Optimize the generated LLVM (-O2)
+    #[arg(short = 'O')]
+    optimize: bool,
 }
 
 fn main() -> miette::Result<()> {
@@ -141,6 +144,11 @@ fn main() -> miette::Result<()> {
         compiler
             .compile(&elaborated_program)
             .map_err(|e| report(e, &args.path, &source))?;
+        if args.optimize {
+            compiler
+                .optimize()
+                .map_err(|e| report(e, &args.path, &source))?;
+        }
         print!("{}", compiler.ir());
     }
 

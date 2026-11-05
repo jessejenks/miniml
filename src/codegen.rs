@@ -1,9 +1,11 @@
 use inkwell::{
-    AddressSpace, IntPredicate,
+    AddressSpace, IntPredicate, OptimizationLevel,
     basic_block::BasicBlock,
     builder::{Builder, BuilderError},
     context::Context,
     module::{Linkage, Module},
+    passes::PassBuilderOptions,
+    targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine},
     types::{FunctionType, IntType, PointerType, StructType},
     values::{CallSiteValue, FunctionValue, GlobalValue, IntValue, LLVMTailCallKind, PointerValue},
 };
@@ -24,6 +26,9 @@ pub enum CodegenError {
         #[label("not defined")]
         span: SourceSpan,
     },
+    #[error("LLVM error: {0}")]
+    #[diagnostic(code(codegen::llvm))]
+    Llvm(String),
 }
 
 type Result<T> = std::result::Result<T, CodegenError>;
@@ -570,6 +575,28 @@ impl<'ctx> Compiler<'ctx> {
 
     pub fn ir(&self) -> String {
         self.module.print_to_string().to_string()
+    }
+
+    pub fn optimize(&self) -> Result<()> {
+        Target::initialize_native(&InitializationConfig::default()).map_err(CodegenError::Llvm)?;
+        let triple = TargetMachine::get_default_triple();
+        let machine = Target::from_triple(&triple)
+            .map_err(|e| CodegenError::Llvm(e.to_string()))?
+            .create_target_machine(
+                &triple,
+                "generic",
+                "",
+                OptimizationLevel::Default,
+                RelocMode::Default,
+                CodeModel::Default,
+            )
+            .ok_or_else(|| CodegenError::Llvm("could not create a target machine".into()))?;
+        self.module.set_triple(&triple);
+        self.module
+            .set_data_layout(&machine.get_target_data().get_data_layout());
+        self.module
+            .run_passes("default<O2>", &machine, PassBuilderOptions::create())
+            .map_err(|e| CodegenError::Llvm(e.to_string()))
     }
 
     pub fn compile(&mut self, program: &ast::Expr) -> Result<()> {
