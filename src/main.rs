@@ -5,15 +5,17 @@ mod interpret;
 mod lexer;
 mod parser;
 mod surface;
+mod typecheck;
 
 use crate::codegen::Compiler;
 use crate::elaborate::surface_to_core;
 use crate::interpret::interpret;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
+use crate::typecheck::TypeChecker;
 use clap::Parser as _;
 use inkwell::context::Context;
-use miette::{NamedSource, Report};
+use miette::{Diagnostic, NamedSource, Report};
 use std::path::Path;
 
 #[derive(clap::Parser, Debug)]
@@ -30,6 +32,9 @@ struct Args {
     /// Run the elaborator
     #[arg(long)]
     elab: bool,
+    /// Run interpreter or codegen even if type check failed
+    #[arg(long)]
+    force: bool,
     /// Run the interpreter
     #[arg(long)]
     interpret: bool,
@@ -55,8 +60,7 @@ fn main() -> miette::Result<()> {
         for span in lexer {
             match span {
                 Err(e) => {
-                    return Err(Report::new(e)
-                        .with_source_code(NamedSource::new(&args.path, source.clone())));
+                    return Err(report(e, &args.path, &source));
                 }
                 Ok((start, tok, end)) => println!("{tok:?} ({start}, {end})"),
             }
@@ -64,9 +68,7 @@ fn main() -> miette::Result<()> {
         return Ok(());
     }
 
-    let program = Parser::parse(&source).map_err(|e| {
-        Report::new(e).with_source_code(NamedSource::new(&args.path, source.clone()))
-    })?;
+    let program = Parser::parse(&source).map_err(|e| report(e, &args.path, &source))?;
     if args.parse {
         println!("{program}");
         return Ok(());
@@ -78,6 +80,15 @@ fn main() -> miette::Result<()> {
         return Ok(());
     }
 
+    let mut type_checker = TypeChecker::new();
+    if let Err(e) = type_checker.infer(&elaborated_program) {
+        let rep = report(e, &args.path, &source);
+        if !args.force {
+            return Err(rep);
+        }
+        eprintln!("{rep:?}");
+    }
+
     if args.interpret {
         let interpreted = interpret(&elaborated_program);
         println!("{interpreted}");
@@ -85,12 +96,17 @@ fn main() -> miette::Result<()> {
 
     if args.codegen {
         let context = Context::create();
-        let with_source =
-            |e| Report::new(e).with_source_code(NamedSource::new(&args.path, source.clone()));
-        let mut compiler = Compiler::new(&context, &args.path).map_err(with_source)?;
-        compiler.compile(&elaborated_program).map_err(with_source)?;
+        let mut compiler =
+            Compiler::new(&context, &args.path).map_err(|e| report(e, &args.path, &source))?;
+        compiler
+            .compile(&elaborated_program)
+            .map_err(|e| report(e, &args.path, &source))?;
         print!("{}", compiler.ir());
     }
 
     Ok(())
+}
+
+fn report<E: Diagnostic + Send + Sync + 'static>(e: E, path: &str, source: &str) -> Report {
+    Report::new(e).with_source_code(NamedSource::new(path, source.to_string()))
 }
