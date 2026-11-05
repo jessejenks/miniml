@@ -10,7 +10,7 @@ pub enum TypeExpr {
     Unit,
     Bool,
     Int,
-    Var(i64),
+    Var(i64, bool), // is this an eq variable
     UnifVar(u32),
     Arrow(Rc<TypeExpr>, Rc<TypeExpr>),
 }
@@ -40,7 +40,7 @@ impl TypeExpr {
     pub fn max_type_variable_level(tp: &TypeExpr) -> i64 {
         match tp {
             TypeExpr::Unit | TypeExpr::Bool | TypeExpr::Int | TypeExpr::UnifVar(_) => -1,
-            TypeExpr::Var(level) => *level,
+            TypeExpr::Var(level, _) => *level,
             TypeExpr::Arrow(src, tgt) => cmp::max(
                 Self::max_type_variable_level(src),
                 Self::max_type_variable_level(tgt),
@@ -59,7 +59,14 @@ impl Display for TypeExpr {
             TypeExpr::Unit => write!(f, "Unit"),
             TypeExpr::Bool => write!(f, "Bool"),
             TypeExpr::Int => write!(f, "Int"),
-            TypeExpr::Var(level) => write!(f, "{}", Self::create_type_variable_name(*level)),
+            TypeExpr::Var(level, eq) => {
+                write!(
+                    f,
+                    "{}{}",
+                    if *eq { "''" } else { "" },
+                    Self::create_type_variable_name(*level)
+                )
+            }
             TypeExpr::UnifVar(id) => {
                 write!(f, "{}", Self::create_existential_variable_name(*id))
             }
@@ -131,6 +138,13 @@ pub enum TypeError {
         #[label("this term")]
         span: SourceSpan,
     },
+    #[error("type cannot be compared with '==' {tp}")]
+    #[diagnostic(code(typecheck::equalirt))]
+    Equality {
+        tp: String,
+        #[label("this term")]
+        span: SourceSpan,
+    },
 }
 
 type Result<T> = std::result::Result<T, TypeError>;
@@ -140,6 +154,7 @@ pub struct TypeChecker {
     context: Vec<Scheme>,
     substitution: Vec<Option<TypeExpr>>,
     bindings: Vec<(ast::Span, Scheme)>,
+    eq: Vec<bool>, // which type variables can be compared with ==
     levels: Vec<i64>,
     current_level: i64,
 }
@@ -151,6 +166,7 @@ impl TypeChecker {
             context: Vec::new(),
             substitution: Vec::new(),
             bindings: Vec::new(),
+            eq: Vec::new(),
             levels: Vec::new(),
             current_level: 0,
         }
@@ -222,7 +238,7 @@ impl TypeChecker {
     ) -> Result<TypeExpr> {
         let t1 = self.algorithm_j(left)?;
         let t2 = self.algorithm_j(right)?;
-        let t_prime = self.new_unification_variable();
+        let t_prime = self.new_unification_variable(false);
         self.unify(
             span,
             t1,
@@ -232,7 +248,7 @@ impl TypeChecker {
     }
 
     fn rule_abs(&mut self, body: &ast::Expr) -> Result<TypeExpr> {
-        let t = self.new_unification_variable();
+        let t = self.new_unification_variable(false);
         self.context.push(Scheme::as_monotype(t.clone()));
         let t_prime = self.algorithm_j(body)?;
         self.context.pop();
@@ -266,7 +282,7 @@ impl TypeChecker {
         body: &ast::Expr,
     ) -> Result<TypeExpr> {
         self.current_level += 1;
-        let t_prime = self.new_unification_variable();
+        let t_prime = self.new_unification_variable(false);
         self.context.push(Scheme::as_monotype(t_prime.clone()));
         let t1 = self.algorithm_j(expr)?;
         self.context.pop();
@@ -346,15 +362,36 @@ impl TypeChecker {
                 self.unify(span, r_tp, TypeExpr::Bool)?;
                 Ok(TypeExpr::Bool)
             }
-            ast::BinaryOp::Eq => todo!(),
+            ast::BinaryOp::Eq => {
+                let a = self.new_unification_variable(true);
+                self.unify(span, l_tp, a.clone())?;
+                self.unify(span, r_tp, a)?;
+                Ok(TypeExpr::Bool)
+            }
         }
     }
 
-    fn new_unification_variable(&mut self) -> TypeExpr {
+    fn new_unification_variable(&mut self, is_eq: bool) -> TypeExpr {
         let id = u32::try_from(self.levels.len()).unwrap();
+        self.eq.push(is_eq);
         self.levels.push(self.current_level);
         self.substitution.push(None);
         TypeExpr::UnifVar(id)
+    }
+
+    fn require_equality(&mut self, span: ast::Span, tp: TypeExpr) -> Result<()> {
+        match self.resolve(tp) {
+            TypeExpr::Unit | TypeExpr::Bool | TypeExpr::Int => Ok(()),
+            TypeExpr::UnifVar(id) => {
+                let idx = usize::try_from(id).unwrap();
+                self.eq[idx] = true;
+                Ok(())
+            }
+            other => Err(TypeError::Equality {
+                tp: other.to_string(),
+                span: span.into(),
+            }),
+        }
     }
 
     fn unify(&mut self, span: ast::Span, left_init: TypeExpr, right_init: TypeExpr) -> Result<()> {
@@ -379,9 +416,11 @@ impl TypeChecker {
                 if self.levels[l_idx] <= self.levels[r_idx] {
                     self.levels[r_idx] = self.levels[l_idx];
                     self.substitution[l_idx] = Some(TypeExpr::UnifVar(r_id));
+                    self.eq[r_idx] |= self.eq[l_idx];
                 } else {
                     self.levels[l_idx] = self.levels[r_idx];
                     self.substitution[r_idx] = Some(TypeExpr::UnifVar(l_id));
+                    self.eq[l_idx] |= self.eq[r_idx];
                 }
                 Ok(())
             }
@@ -393,6 +432,9 @@ impl TypeChecker {
                     })
                 } else {
                     let idx = usize::try_from(id).unwrap();
+                    if self.eq[idx] {
+                        self.require_equality(span, tp.clone())?;
+                    }
                     let level = self.levels[idx];
                     self.lower_levels(tp.clone(), level);
                     self.substitution[idx] = Some(tp);
@@ -436,19 +478,25 @@ impl TypeChecker {
             return scheme.tp.clone();
         }
         let fresh: Vec<TypeExpr> = (0..scheme.arity)
-            .map(|_| self.new_unification_variable())
+            .map(|_| self.new_unification_variable(false))
             .collect();
-        Self::instantiate_inner(&scheme.tp, &fresh)
+        self.instantiate_inner(&scheme.tp, &fresh)
     }
 
-    fn instantiate_inner(tp: &TypeExpr, fresh: &[TypeExpr]) -> TypeExpr {
+    fn instantiate_inner(&mut self, tp: &TypeExpr, fresh: &[TypeExpr]) -> TypeExpr {
         match tp {
-            TypeExpr::Var(level) => {
-                fresh[usize::try_from(*level).expect("levels are non-negative")].clone()
+            TypeExpr::Var(level, is_eq) => {
+                let level_idx = usize::try_from(*level).expect("levels are non-negative");
+                let var = fresh[level_idx].clone();
+                if *is_eq && let TypeExpr::UnifVar(id) = var {
+                    let idx = usize::try_from(id).unwrap();
+                    self.eq[idx] = true;
+                }
+                var
             }
             TypeExpr::Arrow(src, tgt) => TypeExpr::Arrow(
-                Rc::new(Self::instantiate_inner(src, fresh)),
-                Rc::new(Self::instantiate_inner(tgt, fresh)),
+                Rc::new(self.instantiate_inner(src, fresh)),
+                Rc::new(self.instantiate_inner(tgt, fresh)),
             ),
             TypeExpr::Unit | TypeExpr::Bool | TypeExpr::Int | TypeExpr::UnifVar(_) => tp.clone(),
         }
@@ -479,7 +527,7 @@ impl TypeChecker {
                 let idx = usize::try_from(id).unwrap();
                 if self.levels[idx] > level {
                     let next = i64::try_from(generalized.len()).unwrap();
-                    TypeExpr::Var(*generalized.entry(id).or_insert(next))
+                    TypeExpr::Var(*generalized.entry(id).or_insert(next), self.eq[idx])
                 } else {
                     TypeExpr::UnifVar(id)
                 }
@@ -503,13 +551,13 @@ impl TypeChecker {
                 self.lower_levels((*src).clone(), max_level);
                 self.lower_levels((*tgt).clone(), max_level);
             }
-            TypeExpr::Unit | TypeExpr::Bool | TypeExpr::Int | TypeExpr::Var(_) => {}
+            TypeExpr::Unit | TypeExpr::Bool | TypeExpr::Int | TypeExpr::Var(_, _) => {}
         }
     }
 
     fn occurs(&mut self, id: u32, tp: TypeExpr) -> bool {
         match self.resolve(tp) {
-            TypeExpr::Unit | TypeExpr::Bool | TypeExpr::Int | TypeExpr::Var(_) => false,
+            TypeExpr::Unit | TypeExpr::Bool | TypeExpr::Int | TypeExpr::Var(_, _) => false,
             TypeExpr::UnifVar(tp_id) => id == tp_id,
             TypeExpr::Arrow(src, tgt) => {
                 self.occurs(id, (*src).clone()) || self.occurs(id, (*tgt).clone())
@@ -548,6 +596,10 @@ mod tests {
         assert_eq!(check("1").unwrap(), "Int");
         assert_eq!(check("-1 + 2 * 3").unwrap(), "Int");
         assert_eq!(check("1 < 2 && !false").unwrap(), "Bool");
+        assert_eq!(check("() == ()").unwrap(), "Bool");
+        assert_eq!(check("true == true").unwrap(), "Bool");
+        assert_eq!(check("1 == 1").unwrap(), "Bool");
+        assert_eq!(check("1 == (fun _ => 2) ()").unwrap(), "Bool");
         assert_eq!(check("1; true").unwrap(), "Bool");
         assert_eq!(check("fun x => x").unwrap(), "(∀α.α -> α)");
         assert_eq!(check("fun x => fun y => x").unwrap(), "(∀α.∀β.α -> β -> α)");
@@ -585,6 +637,10 @@ mod tests {
             check("let rec loop = fun x => loop x; loop").unwrap(),
             "(∀α.∀β.α -> β)"
         );
+        assert_eq!(
+            check("fun x => fun y => x == y").unwrap(),
+            "(∀α.''α -> ''α -> Bool)"
+        );
     }
 
     #[test]
@@ -621,14 +677,23 @@ mod tests {
             check("let rec f = fun x => f; f"),
             Err(TypeError::OccursCheck { .. })
         ));
+        assert!(matches!(
+            check("(fun x => x) == (fun y => y)"),
+            Err(TypeError::Equality { .. })
+        ));
+        // infers f as arrow type, so equality fails
+        assert!(matches!(
+            check("fun f => fun x => { f x; f == f }"),
+            Err(TypeError::Equality { .. })
+        ));
     }
 
     #[test]
     fn resolves_chains() {
         let mut checker = TypeChecker::new();
-        let a = checker.new_unification_variable();
-        let b = checker.new_unification_variable();
-        let c = checker.new_unification_variable();
+        let a = checker.new_unification_variable(false);
+        let b = checker.new_unification_variable(false);
+        let c = checker.new_unification_variable(false);
         checker.substitution[0] = Some(b.clone());
         checker.substitution[1] = Some(c.clone());
         checker.substitution[2] = Some(arrow(TypeExpr::Int, TypeExpr::Bool));
@@ -637,7 +702,7 @@ mod tests {
         assert_eq!(checker.substitution[0], checker.substitution[2]);
         assert_eq!(checker.substitution[1], checker.substitution[2]);
 
-        let unbound = checker.new_unification_variable();
+        let unbound = checker.new_unification_variable(false);
         assert_eq!(checker.resolve(unbound.clone()), unbound);
         assert_eq!(checker.resolve(TypeExpr::Int), TypeExpr::Int);
     }
