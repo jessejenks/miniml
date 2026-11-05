@@ -81,6 +81,13 @@ fn main() -> miette::Result<()> {
     }
 
     let mut type_checker = TypeChecker::new();
+    type_checker.set_env(
+        "print".to_string(),
+        typecheck::Scheme::as_monotype(typecheck::TypeExpr::arrow(
+            typecheck::TypeExpr::Int,
+            typecheck::TypeExpr::Unit,
+        )),
+    );
     if let Err(e) = type_checker.infer(&elaborated_program) {
         let rep = report(e, &args.path, &source);
         if !args.force {

@@ -47,6 +47,10 @@ impl TypeExpr {
             ),
         }
     }
+
+    pub fn arrow(src: TypeExpr, tgt: TypeExpr) -> TypeExpr {
+        Self::Arrow(Rc::new(src), Rc::new(tgt))
+    }
 }
 
 impl Display for TypeExpr {
@@ -87,6 +91,12 @@ impl Display for Scheme {
             }
             write!(f, "{})", self.tp)
         }
+    }
+}
+
+impl Scheme {
+    pub fn as_monotype(tp: TypeExpr) -> Scheme {
+        Scheme { arity: 0, tp }
     }
 }
 
@@ -151,6 +161,10 @@ impl TypeChecker {
         Ok(scheme)
     }
 
+    pub fn set_env(&mut self, name: String, tp: Scheme) {
+        self.env.insert(name, tp);
+    }
+
     fn algorithm_j(&mut self, expr: &ast::Expr) -> Result<TypeExpr> {
         match &expr.kind {
             ast::ExprKind::Unit => Ok(TypeExpr::Unit),
@@ -211,7 +225,7 @@ impl TypeChecker {
 
     fn rule_abs(&mut self, body: &ast::Expr) -> Result<TypeExpr> {
         let t = self.new_unification_variable();
-        self.context.push(Self::as_monotype(t.clone()));
+        self.context.push(Scheme::as_monotype(t.clone()));
         let t_prime = self.algorithm_j(body)?;
         self.context.pop();
         Ok(TypeExpr::Arrow(Rc::new(t), Rc::new(t_prime)))
@@ -236,7 +250,7 @@ impl TypeChecker {
     ) -> Result<TypeExpr> {
         self.current_level += 1;
         let t_prime = self.new_unification_variable();
-        self.context.push(Self::as_monotype(t_prime.clone()));
+        self.context.push(Scheme::as_monotype(t_prime.clone()));
         let t1 = self.algorithm_j(expr)?;
         self.context.pop();
         self.unify(span, t_prime.clone(), t1)?;
@@ -314,10 +328,6 @@ impl TypeChecker {
             }
             ast::BinaryOp::Eq => todo!(),
         }
-    }
-
-    fn as_monotype(tp: TypeExpr) -> Scheme {
-        Scheme { arity: 0, tp }
     }
 
     fn new_unification_variable(&mut self) -> TypeExpr {
