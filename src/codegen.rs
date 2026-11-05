@@ -295,6 +295,21 @@ impl<'ctx> Compiler<'ctx> {
         self.store_env(cell)
     }
 
+    /// env = cons(dummy, env)
+    fn dummy(&self) -> Result<()> {
+        self.let_in(self.word.const_zero())
+    }
+
+    /// env.head = accu
+    fn update(&self, value: IntValue<'ctx>) -> Result<()> {
+        let env = self.load_env()?;
+        let head_ptr = self
+            .builder
+            .build_struct_gep(self.list_type, env, 0, "env.head")?;
+        self.builder.build_store(head_ptr, value)?;
+        Ok(())
+    }
+
     /// env = env.tail
     fn end_let(&self) -> Result<()> {
         let env = self.load_env()?;
@@ -476,7 +491,14 @@ impl<'ctx> Compiler<'ctx> {
                 self.end_let()?;
                 Ok(result)
             }
-            ast::ExprKind::LetIn(true, _, expr, body) => todo!(),
+            ast::ExprKind::LetIn(true, _, expr, body) => {
+                self.dummy()?;
+                let value = self.compile_expression(expr)?;
+                self.update(value)?;
+                let result = self.compile_expression(body)?;
+                self.end_let()?;
+                Ok(result)
+            }
             ast::ExprKind::IfElse(condition, consequence, alternative) => todo!(),
         }
     }
@@ -510,7 +532,12 @@ impl<'ctx> Compiler<'ctx> {
                 self.let_in(value)?;
                 self.compile_expression_tail(body)
             }
-            ast::ExprKind::LetIn(true, _, expr, body) => todo!(),
+            ast::ExprKind::LetIn(true, _, expr, body) => {
+                self.dummy()?;
+                let value = self.compile_expression(expr)?;
+                self.update(value)?;
+                self.compile_expression_tail(body)
+            }
             ast::ExprKind::IfElse(condition, consequence, alternative) => todo!(),
         }
     }
@@ -642,5 +669,15 @@ mod tests {
         agrees("let k = fun x => fun y => x; let f = k 1; f 2");
         agrees("(fun x => { let y = x + 1; y * 2 }) 3");
         agrees("let a = 1; 10 * { let b = 2; b } + a");
+        agrees("let rec f = fun x => x + 1; f 2");
+        agrees("let rec f = fun x => fun y => x; f 1 2");
+        agrees(
+            "let rec f = fun b => b (fun _ => 1) (fun _ => 1 + f (fun x => fun y => x)) 0;
+            f (fun x => fun y => y)",
+        );
+        agrees(
+            "let rec count = fun n => n (fun _ => 0) (fun _ => 1 + count (fun x => fun y => x)) 0;
+            (fun x => { let rec g = fun y => x + y; g 10 }) (count (fun x => fun y => y))",
+        );
     }
 }
