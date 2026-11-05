@@ -85,7 +85,8 @@ fn main() -> miette::Result<()> {
 
     if args.codegen {
         let context = Context::create();
-        let mut compiler = Compiler::new(&context);
+        let mut compiler =
+            Compiler::new(&context, &args.path).map_err(|e| miette::miette!("codegen: {e}"))?;
         compiler
             .compile(&elaborated_program)
             .map_err(|e| miette::miette!("codegen: {e}"))?;
