@@ -139,6 +139,7 @@ pub struct TypeChecker {
     env: HashMap<String, Scheme>,
     context: Vec<Scheme>,
     substitution: Vec<Option<TypeExpr>>,
+    bindings: Vec<(ast::Span, Scheme)>,
     levels: Vec<i64>,
     current_level: i64,
 }
@@ -149,6 +150,7 @@ impl TypeChecker {
             env: HashMap::new(),
             context: Vec::new(),
             substitution: Vec::new(),
+            bindings: Vec::new(),
             levels: Vec::new(),
             current_level: 0,
         }
@@ -165,6 +167,10 @@ impl TypeChecker {
         self.env.insert(name, tp);
     }
 
+    pub fn bindings(&self) -> &[(ast::Span, Scheme)] {
+        &self.bindings
+    }
+
     fn algorithm_j(&mut self, expr: &ast::Expr) -> Result<TypeExpr> {
         match &expr.kind {
             ast::ExprKind::Unit => Ok(TypeExpr::Unit),
@@ -174,8 +180,10 @@ impl TypeChecker {
             ast::ExprKind::FreeVariable(name) => self.rule_free_var(expr.span, name.clone()),
             ast::ExprKind::Application(left, right) => self.rule_app(expr.span, left, right),
             ast::ExprKind::Abstraction(_, body) => self.rule_abs(body),
-            ast::ExprKind::LetIn(false, _, e, body) => self.rule_let(e, body),
-            ast::ExprKind::LetIn(true, _, e, body) => self.rule_let_rec(expr.span, e, body),
+            ast::ExprKind::LetIn(false, var_span, e, body) => self.rule_let(*var_span, e, body),
+            ast::ExprKind::LetIn(true, var_span, e, body) => {
+                self.rule_let_rec(expr.span, *var_span, e, body)
+            }
             ast::ExprKind::IfElse(condition, consequence, alternative) => {
                 self.rule_if(expr.span, condition, consequence, alternative)
             }
@@ -231,11 +239,19 @@ impl TypeChecker {
         Ok(TypeExpr::Arrow(Rc::new(t), Rc::new(t_prime)))
     }
 
-    fn rule_let(&mut self, expr: &ast::Expr, body: &ast::Expr) -> Result<TypeExpr> {
+    fn rule_let(
+        &mut self,
+        var_span: Option<ast::Span>,
+        expr: &ast::Expr,
+        body: &ast::Expr,
+    ) -> Result<TypeExpr> {
         self.current_level += 1;
         let t_prime = self.algorithm_j(expr)?;
         self.current_level -= 1;
         let t_prime_gen = self.generalize(t_prime);
+        if let Some(var_span) = var_span {
+            self.bindings.push((var_span, t_prime_gen.clone()));
+        }
         self.context.push(t_prime_gen);
         let t = self.algorithm_j(body)?;
         self.context.pop();
@@ -245,6 +261,7 @@ impl TypeChecker {
     fn rule_let_rec(
         &mut self,
         span: ast::Span,
+        var_span: Option<ast::Span>,
         expr: &ast::Expr,
         body: &ast::Expr,
     ) -> Result<TypeExpr> {
@@ -256,6 +273,9 @@ impl TypeChecker {
         self.unify(span, t_prime.clone(), t1)?;
         self.current_level -= 1;
         let t_prime_gen = self.generalize(t_prime);
+        if let Some(var_span) = var_span {
+            self.bindings.push((var_span, t_prime_gen.clone()));
+        }
         self.context.push(t_prime_gen);
         let t = self.algorithm_j(body)?;
         self.context.pop();

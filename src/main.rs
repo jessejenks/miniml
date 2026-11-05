@@ -32,6 +32,9 @@ struct Args {
     /// Run the elaborator
     #[arg(long)]
     elab: bool,
+    /// Print types for declarations
+    #[arg(long, visible_alias = "interface", short = 'i')]
+    types: bool,
     /// Run interpreter or codegen even if type check failed
     #[arg(long)]
     force: bool,
@@ -88,12 +91,42 @@ fn main() -> miette::Result<()> {
             typecheck::TypeExpr::Unit,
         )),
     );
-    if let Err(e) = type_checker.infer(&elaborated_program) {
-        let rep = report(e, &args.path, &source);
-        if !args.force {
-            return Err(rep);
+    let type_check_result = type_checker.infer(&elaborated_program);
+    match type_check_result {
+        Err(e) => {
+            let rep = report(e, &args.path, &source);
+            if !args.force {
+                return Err(rep);
+            }
+            eprintln!("{rep:?}");
         }
-        eprintln!("{rep:?}");
+        Ok(sch) if args.types => {
+            let mut spans = Vec::new();
+            let mut expr = &elaborated_program;
+            loop {
+                match &expr.kind {
+                    ast::ExprKind::LetIn(_, Some(span), _, body) => {
+                        spans.push(*span);
+                        expr = body;
+                    }
+                    ast::ExprKind::Application(f, _) => match &f.kind {
+                        ast::ExprKind::Abstraction(None, rest) => expr = rest,
+                        _ => break,
+                    },
+                    _ => break,
+                }
+            }
+            if !spans.is_empty() {
+                let bindings = type_checker.bindings();
+                for span in spans {
+                    if let Some((_, scheme)) = bindings.iter().find(|(sp, _)| *sp == span) {
+                        println!("{} : {scheme}", &source[span.start..span.end]);
+                    }
+                }
+            }
+            println!("- : {sch}");
+        }
+        _ => {}
     }
 
     if args.interpret {
