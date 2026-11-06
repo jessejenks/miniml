@@ -16,7 +16,7 @@ use crate::typecheck::TypeChecker;
 use clap::Parser as _;
 use inkwell::context::Context;
 use miette::{Diagnostic, NamedSource, Report};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(clap::Parser, Debug)]
 struct Args {
@@ -42,11 +42,23 @@ struct Args {
     #[arg(long)]
     interpret: bool,
     /// Output to LLVM
-    #[arg(long)]
+    #[arg(long, visible_alias = "emit-llvm")]
     codegen: bool,
-    /// Optimize the generated LLVM (-O2)
-    #[arg(short = 'O')]
-    optimize: bool,
+    /// Write assembly to `<output>.s`
+    #[arg(short = 'S')]
+    assembly: bool,
+    /// Write an object file to `<output>.o`
+    #[arg(short = 'c')]
+    object: bool,
+    /// Optimize the generated LLVM
+    #[arg(short = 'O', value_parser = clap::value_parser!(u8).range(0..=3))]
+    optimize: Option<u8>,
+    /// Compile to a native executable at this path
+    #[arg(short = 'o', long)]
+    output: Option<PathBuf>,
+    /// Target triple, expects same format as `clang` [default: host]
+    #[arg(long)]
+    target: Option<String>,
 }
 
 fn main() -> miette::Result<()> {
@@ -128,31 +140,59 @@ fn main() -> miette::Result<()> {
                 }
             }
             println!("- : {sch}");
+            return Ok(());
         }
-        _ => {}
+        Ok(_) => {}
     }
 
     if args.interpret {
         let interpreted = interpret(&elaborated_program);
         println!("{interpreted}");
+        return Ok(());
     }
 
-    if args.codegen {
-        let context = Context::create();
-        let mut compiler =
-            Compiler::new(&context, &args.path).map_err(|e| report(e, &args.path, &source))?;
+    let context = Context::create();
+    let mut compiler =
+        Compiler::new(&context, &args.path).map_err(|e| report(e, &args.path, &source))?;
+    if let Some(triple) = &args.target {
+        compiler.set_target(triple.clone());
+    }
+    compiler
+        .compile(&elaborated_program)
+        .map_err(|e| report(e, &args.path, &source))?;
+    if let Some(level) = args.optimize {
         compiler
-            .compile(&elaborated_program)
+            .optimize(level)
             .map_err(|e| report(e, &args.path, &source))?;
-        if args.optimize {
-            compiler
-                .optimize()
-                .map_err(|e| report(e, &args.path, &source))?;
-        }
+    }
+    if args.codegen {
         print!("{}", compiler.ir());
+        return Ok(());
     }
 
-    Ok(())
+    let output = args.output.clone().unwrap_or_else(|| default_output(input));
+    if args.assembly {
+        return compiler
+            .write_assembly(&output.with_extension("s"))
+            .map_err(|e| report(e, &args.path, &source));
+    }
+    if args.object {
+        return compiler
+            .write_object(&output.with_extension("o"))
+            .map_err(|e| report(e, &args.path, &source));
+    }
+    compiler
+        .build_executable(&output)
+        .map_err(|e| report(e, &args.path, &source))
+}
+
+fn default_output(input: &Path) -> PathBuf {
+    let stem = input.with_extension("");
+    if stem == input {
+        PathBuf::from("a.out")
+    } else {
+        stem
+    }
 }
 
 fn report<E: Diagnostic + Send + Sync + 'static>(e: E, path: &str, source: &str) -> Report {
