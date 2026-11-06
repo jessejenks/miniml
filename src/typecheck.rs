@@ -105,6 +105,10 @@ impl Scheme {
     pub fn as_monotype(tp: TypeExpr) -> Scheme {
         Scheme { arity: 0, tp }
     }
+
+    pub fn tp(&self) -> &TypeExpr {
+        &self.tp
+    }
 }
 
 #[derive(Debug, Error, Diagnostic)]

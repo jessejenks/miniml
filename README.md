@@ -40,20 +40,11 @@ miniml fact.mml
 ./fact
 ```
 
-prints to stdout
+prints `120` to stdout and then displays the final computed value.
 
 ```
 120
-```
-
-return value is exit code
-
-```sh
-echo $?
-```
-
-```
-120
+- : Int = 120
 ```
 
 ### Options
@@ -184,14 +175,14 @@ miniml fact.mml --interpret
 
 ```
 120
-120
+- : Int = 120
 ```
 
 ### Code Generation
 
 ```sh
 miniml fact.mml --codegen
-miniml fact.mml --codegen -O # to run LLVM -O2
+miniml fact.mml --codegen -O2 # to run LLVM -O2
 ```
 
 Prints LLVM IR to stdout.
@@ -239,18 +230,30 @@ Interpret it:
 
 ```sh
 lli fact.ll
-echo $?
 ```
 
-Note that this is a key difference from the interpreter: the result of the entire program is always expected to be an
-integer, so for a program like this:
+```
+120
+- : Int = 120
+```
+
+Note that the way the final value is displayed differs from the interpreter. In the interpreter, we have access to the entire term, so running `--interpret` on a program like this
 
 ```
 fun => 1
 ```
 
-`--interpret` will print a nice string like `(λ.1)`, while `lli` will output nothing, and `echo $?` will display a
-random looking number that comes from unboxing the address of the closure.
+will print the actual term
+
+```
+- : (∀α.α -> Int) = (λ.1)
+```
+
+while the compiled version will print
+
+```
+- : (∀α.α -> Int) = <fun>
+```
 
 ## Future Work
 

@@ -10,7 +10,10 @@ use inkwell::{
         CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
     },
     types::{FunctionType, IntType, PointerType, StructType},
-    values::{CallSiteValue, FunctionValue, GlobalValue, IntValue, LLVMTailCallKind, PointerValue},
+    values::{
+        BasicMetadataValueEnum, CallSiteValue, FunctionValue, GlobalValue, IntValue,
+        LLVMTailCallKind, PointerValue,
+    },
 };
 use miette::{Diagnostic, SourceSpan};
 use std::{path::Path, process::Command};
@@ -45,6 +48,18 @@ impl From<LLVMString> for CodegenError {
 }
 
 type Result<T> = std::result::Result<T, CodegenError>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultKind {
+    Int,
+    Bool,
+    Unit,
+    Function,
+    /// no return value expected
+    Never,
+    /// always return the unboxed result as the exit code
+    ExitCode,
+}
 
 const TAIL_CC: u32 = 18;
 
@@ -679,7 +694,7 @@ impl<'ctx> Compiler<'ctx> {
         Ok(machine)
     }
 
-    pub fn compile(&mut self, program: &ast::Expr) -> Result<()> {
+    pub fn compile(&mut self, program: &ast::Expr, kind: ResultKind, label: &str) -> Result<()> {
         // define i64 @main() { entry: ... }
         let main = self
             .module
@@ -688,10 +703,49 @@ impl<'ctx> Compiler<'ctx> {
             .position_at_end(self.context.append_basic_block(main, "entry"));
         self.env_slot = Some(self.new_env_slot(self.ptr_type.const_null())?);
 
-        // For now, return value is always assumed to be an int
         let result = self.compile_expression(program)?;
-        let exit_code = self.unbox_int(result)?;
-        self.builder.build_return(Some(&exit_code))?;
+        let label = label.replace('%', "%%");
+        match kind {
+            ResultKind::ExitCode => {
+                let exit_code = self.unbox_int(result)?;
+                self.builder.build_return(Some(&exit_code))?;
+                return Ok(());
+            }
+            ResultKind::Int => {
+                let n = self.unbox_int(result)?;
+                self.call_printf(&format!("{label}%lld\n"), &[n.into()])?;
+            }
+            ResultKind::Bool => {
+                let n = self.unbox_int(result)?;
+                let is_true = self.builder.build_int_compare(
+                    IntPredicate::NE,
+                    n,
+                    self.word.const_zero(),
+                    "is_true",
+                )?;
+                let t = self.builder.build_global_string_ptr("true", "true.str")?;
+                let f = self.builder.build_global_string_ptr("false", "false.str")?;
+                let s = self.builder.build_select(
+                    is_true,
+                    t.as_pointer_value(),
+                    f.as_pointer_value(),
+                    "bool.str",
+                )?;
+                self.call_printf(&format!("{label}%s\n"), &[s.into()])?;
+            }
+            ResultKind::Unit => self.call_printf(&format!("{label}()\n"), &[])?,
+            ResultKind::Function => self.call_printf(&format!("{label}<fun>\n"), &[])?,
+            ResultKind::Never => {}
+        }
+        self.builder.build_return(Some(&self.word.const_zero()))?;
+        Ok(())
+    }
+
+    fn call_printf(&self, format: &str, args: &[BasicMetadataValueEnum<'ctx>]) -> Result<()> {
+        let format = self.builder.build_global_string_ptr(format, "format")?;
+        let mut all_args = vec![format.as_pointer_value().into()];
+        all_args.extend_from_slice(args);
+        self.builder.build_direct_call(self.printf, &all_args, "")?;
         Ok(())
     }
 
@@ -908,7 +962,9 @@ mod tests {
         let program = surface_to_core(Parser::parse(source).unwrap());
         let context = Context::create();
         let mut compiler = Compiler::new(&context, "test").unwrap();
-        compiler.compile(&program).unwrap();
+        compiler
+            .compile(&program, ResultKind::ExitCode, "")
+            .unwrap();
         if let Err(e) = compiler.module.verify() {
             panic!("invalid IR for {source:?}: {e}\n{}", compiler.ir());
         }
@@ -993,7 +1049,7 @@ mod tests {
         let context = Context::create();
         let mut compiler = Compiler::new(&context, "test").unwrap();
         assert!(matches!(
-            compiler.compile(&program),
+            compiler.compile(&program, ResultKind::ExitCode, ""),
             Err(CodegenError::UnknownVariable { name, .. }) if name == "foo"
         ));
     }

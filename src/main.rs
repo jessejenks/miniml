@@ -7,7 +7,7 @@ mod parser;
 mod surface;
 mod typecheck;
 
-use crate::codegen::Compiler;
+use crate::codegen::{Compiler, ResultKind};
 use crate::elaborate::surface_to_core;
 use crate::interpret::interpret;
 use crate::lexer::Lexer;
@@ -107,13 +107,14 @@ fn main() -> miette::Result<()> {
         )),
     );
     let type_check_result = type_checker.infer(&elaborated_program);
-    match type_check_result {
+    let (result_kind, result_label) = match type_check_result {
         Err(e) => {
             let rep = report(e, &args.path, &source);
             if !args.force {
                 return Err(rep);
             }
             eprintln!("{rep:?}");
+            (ResultKind::ExitCode, String::new())
         }
         Ok(sch) if args.types => {
             let mut spans = Vec::new();
@@ -142,12 +143,12 @@ fn main() -> miette::Result<()> {
             println!("- : {sch}");
             return Ok(());
         }
-        Ok(_) => {}
-    }
+        Ok(sch) => (result_kind(sch.tp()), format!("- : {sch} = ")),
+    };
 
     if args.interpret {
         let interpreted = interpret(&elaborated_program);
-        println!("{interpreted}");
+        println!("{result_label}{interpreted}");
         return Ok(());
     }
 
@@ -158,7 +159,7 @@ fn main() -> miette::Result<()> {
         compiler.set_target(triple.clone());
     }
     compiler
-        .compile(&elaborated_program)
+        .compile(&elaborated_program, result_kind, &result_label)
         .map_err(|e| report(e, &args.path, &source))?;
     if let Some(level) = args.optimize {
         compiler
@@ -184,6 +185,16 @@ fn main() -> miette::Result<()> {
     compiler
         .build_executable(&output)
         .map_err(|e| report(e, &args.path, &source))
+}
+
+fn result_kind(tp: &typecheck::TypeExpr) -> ResultKind {
+    match tp {
+        typecheck::TypeExpr::Int => ResultKind::Int,
+        typecheck::TypeExpr::Bool => ResultKind::Bool,
+        typecheck::TypeExpr::Unit => ResultKind::Unit,
+        typecheck::TypeExpr::Arrow(..) => ResultKind::Function,
+        typecheck::TypeExpr::Var(..) | typecheck::TypeExpr::UnifVar(_) => ResultKind::Never,
+    }
 }
 
 fn default_output(input: &Path) -> PathBuf {
