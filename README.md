@@ -1,5 +1,7 @@
 # miniml
 
+![Tests](https://github.com/jessejenks/miniml/actions/workflows/test.yml/badge.svg)
+
 A small ML-style language that compiles to LLVM IR.
 
 ```
