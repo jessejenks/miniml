@@ -16,15 +16,65 @@ print result;
 result
 ```
 
-This is a combination of a variety of previous projects, primarily my [ZINC compiler](https://github.com/jessejenks/ZINC).
+## Highlights
 
-## Building
+This is a simple functional language inspired by CAML. It features a Hindley-Milner type checker with SML style equality
+types[^1] for `==` comparison. The compiler uses the ZINC abstract machine's compilation scheme, and is based on my
+previous ZINC project[^2].
 
-The backend uses [inkwell](https://github.com/TheDan64/inkwell) 0.11, which supports LLVM 12 through 23. This project assumes LLVM 21.1.
+The compiler uses `inkwell`[^3] to write LLVM.
+
+Because the ZINC compilation scheme already tracks tail position, the compiler can use proper `tailcc` with `musttail`.
+
+Values are 64-bit words with 63-bit tagged integers or pointers to closures.
+
+Like my existing WebAssembly version, the environment is a heap-allocated list, and closures are pairs of code pointers
+and environments.
+
+## Usage
+
+### Creating an Executable
+
+```sh
+miniml fact.mml
+./fact
+```
+
+prints to stdout
+
+```
+120
+```
+
+return value is exit code
+
+```sh
+echo $?
+```
+
+```
+120
+```
+
+### Options
+
+All options can be seen with `--help`, but they mostly match `clang` and `gcc`.
+
+```sh
+miniml fact.mml --target x86_64-pc-windows-msvc -c -O2
+```
+
+will write a COFF object file at `fact.o`.
+
+## Building From Source
+
+This project can be built like any normal Rust project
 
 ```sh
 cargo build
 ```
+
+The backend uses `inkwell` 0.11, which supports LLVM 12 through 23, but this project assumes LLVM 21.1.
 
 If LLVM 21 isn't the `llvm-config` on your `PATH`, use the `LLVM_SYS_211_PREFIX` variable.
 
@@ -36,13 +86,14 @@ LLVM_SYS_211_PREFIX=/path/to/llvm cargo build
 
 ### Lexer
 
-Debugging the lexer
+Debugging the lexer.
 
 ```sh
 miniml fact.mml --lex
 ```
 
 Just prints each token and its location in the file
+
 ```
 Keyword(Let) (21, 24)  # `let` keyword at input indices 21 through 24, non-inclusive
 Keyword(Rec) (25, 28)
@@ -75,14 +126,14 @@ Elaborates to a core syntax with de Bruijn indices, and printed in s-expression 
 (let rec (λ.(if (< #0 2) then 1 else (* #0 (#1 (- #0 1))))) in (let (#0 5) in ((λ.#1) (print #0))))
 ```
 
-Multi-parameter functions are also elaborated to curried functions, so `fun x, y, z => z` is equivalent to `fun x => fun y => fun z => z`, and both elaborate to `(λ.(λ.(λ.#0)))`.
+Multi-parameter functions are also elaborated to curried functions, so `fun x, y, z => z` is equivalent to
+`fun x => fun y => fun z => z`, and both elaborate to `(λ.(λ.(λ.#0)))`.
 
 A function with no arguments like `fun => 1` is equivalent to `fun _ => 1`, which elaborates to `(λ.1)`.
 
 Sequences are derived forms, and are elaborated to lambdas.
 
 `1; 2` elaborates to `((λ.2) 1)`.
-
 
 ### Type Checker
 
@@ -93,6 +144,7 @@ miniml fact.mml -i
 ```
 
 Prints inferred top-level declarations and type of entire program.
+
 ```
 fact : Int -> Int
 result : Int
@@ -139,6 +191,7 @@ miniml fact.mml --interpret
 
 ```sh
 miniml fact.mml --codegen
+miniml fact.mml --codegen -O # to run LLVM -O2
 ```
 
 Prints LLVM IR to stdout.
@@ -173,10 +226,10 @@ entry:
 ...
 ```
 
-
 ## Running the LLVM IR
 
-The examples below expect the LLVM 21 tools (`lli`, `opt`, `llc`, `clang`). Older versions may not be able to read the generated IR.
+The examples below expect the LLVM 21 tools (`lli`, `opt`, `llc`, `clang`). Older versions may not be able to read the
+generated IR.
 
 ```sh
 miniml fact.mml --codegen > fact.ll
@@ -189,10 +242,29 @@ lli fact.ll
 echo $?
 ```
 
-Note that this is a key difference from the interpreter: the result of the entire program is always expected to be an integer, so for program like this:
+Note that this is a key difference from the interpreter: the result of the entire program is always expected to be an
+integer, so for a program like this:
 
 ```
 fun => 1
 ```
 
-`--interpret` will print a nice string like `(λ.1)`, while `lli` will output nothing, and `echo $?` will display a random looking number that comes from unboxing the address of the closure.
+`--interpret` will print a nice string like `(λ.1)`, while `lli` will output nothing, and `echo $?` will display a
+random looking number that comes from unboxing the address of the closure.
+
+## Future Work
+
+- A proper garbage collector (memory is currently never freed)
+- Strings
+- Tuple types
+- Algebraic data types
+- Pattern matching
+
+---
+
+[^1]: _The Definition of Standard ML Revised_ "Types and Type Functions"
+    ([source](https://github.com/SMLFamily/The-Definition-of-Standard-ML-Revised/blob/c4212f434cafd06669171619f7d332341a5b31f3/statcor.tex#L241))
+
+[^2]: My previous ZINC WebAssembly compiler and explainer: https://github.com/jessejenks/ZINC
+
+[^3]: The Inkwell crate: https://github.com/TheDan64/inkwell
