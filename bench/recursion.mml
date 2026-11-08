@@ -1,0 +1,8 @@
+# non-tail recursion
+let rec sum = fun n =>
+    if n < 1 then 0 else n + sum (n - 1);
+
+let rec repeat = fun n, acc =>
+    if n < 1 then acc else repeat (n - 1) (acc + sum 10000);
+
+repeat 100 0

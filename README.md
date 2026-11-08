@@ -33,6 +33,9 @@ Values are 64-bit words with 63-bit tagged integers or pointers to closures.
 Like my existing WebAssembly version, the environment is a heap-allocated list, and closures are pairs of code pointers
 and environments.
 
+Generated code allocates through a small C runtime ([`runtime/runtime.c`](runtime/runtime.c)), which is linked into
+every executable. It currently wraps `malloc` and counts allocations.
+
 ## Usage
 
 ### Creating an Executable
@@ -58,6 +61,28 @@ miniml fact.mml --target x86_64-pc-windows-msvc -c -O2
 ```
 
 will write a COFF object file at `fact.o`.
+
+Object files (`-c`) and assembly (`-S`) don't include the runtime, so link it yourself.
+
+```sh
+miniml fact.mml -c
+clang fact.o runtime/runtime.c -o fact
+```
+
+### Allocation Stats
+
+Set `MINIML_STATS` to print allocation counts to stderr when the program exits.
+
+```sh
+MINIML_STATS=1 ./fact
+```
+
+```
+120
+- : Int = 120
+allocations: 26
+allocated bytes: 416
+```
 
 ## Building From Source
 
@@ -199,7 +224,7 @@ source_filename = "fact.mml"
 @ARGS = internal global ptr null
 @print.format = private unnamed_addr constant [6 x i8] c"%lld\0A\00", align 1
 
-declare ptr @malloc(i64)
+declare ptr @miniml_alloc(i64)
 
 declare i32 @printf(ptr, ...)
 ...
@@ -211,6 +236,7 @@ entry:
 
 define i64 @main() {
 entry:
+  call void @miniml_init()
   %env.slot = alloca ptr, align 8
   ...
   ret i64 %unboxed
@@ -228,15 +254,23 @@ generated IR.
 miniml fact.mml --codegen > fact.ll
 ```
 
-Interpret it:
+The IR only declares `miniml_init` and `miniml_alloc`, so the runtime has to come along. Interpret it by compiling the
+runtime to IR as well:
 
 ```sh
-lli fact.ll
+clang -S -emit-llvm runtime/runtime.c -o runtime.ll
+lli --extra-module=runtime.ll fact.ll
 ```
 
 ```
 120
 - : Int = 120
+```
+
+Or compile it with the runtime:
+
+```sh
+clang fact.ll runtime/runtime.c -o fact
 ```
 
 Note that the way the final value is displayed differs from the interpreter. In the interpreter, we have access to the entire term, so running `--interpret` on a program like this

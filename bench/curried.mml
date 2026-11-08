@@ -1,0 +1,6 @@
+let add3 = fun x, y, z => x + y + z;
+
+let rec loop = fun n, acc =>
+    if n < 1 then acc else loop (n - 1) (add3 acc 1 2);
+
+loop 1000000 0

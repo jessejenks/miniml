@@ -1,0 +1,7 @@
+let rec build = fun n, f =>
+    if n < 1 then f else build (n - 1) (fun x => f x + 1);
+
+let rec repeat = fun n, acc =>
+    if n < 1 then acc else repeat (n - 1) (acc + build 1000 (fun x => x) 0);
+
+repeat 1000 0

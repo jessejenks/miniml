@@ -63,11 +63,13 @@ pub enum ResultKind {
 
 const TAIL_CC: u32 = 18;
 
+const RUNTIME: &str = include_str!("../runtime/runtime.c");
+
 pub struct Compiler<'ctx> {
     context: &'ctx Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
-    malloc: FunctionValue<'ctx>,
+    miniml_alloc: FunctionValue<'ctx>,
     cons_fn: FunctionValue<'ctx>,
     closure_fn: FunctionValue<'ctx>,
     printf: FunctionValue<'ctx>,
@@ -91,7 +93,11 @@ impl<'ctx> Compiler<'ctx> {
         let word = context.i64_type();
         let ptr_type = context.ptr_type(AddressSpace::default());
 
-        let malloc = module.add_function("malloc", ptr_type.fn_type(&[word.into()], false), None);
+        let miniml_alloc = module.add_function(
+            "miniml_alloc",
+            ptr_type.fn_type(&[word.into()], false),
+            None,
+        );
         // declare i32 @printf(ptr, ...)
         let printf = module.add_function(
             "printf",
@@ -133,7 +139,7 @@ impl<'ctx> Compiler<'ctx> {
             context,
             module,
             builder,
-            malloc,
+            miniml_alloc,
             cons_fn,
             closure_fn,
             printf,
@@ -172,7 +178,7 @@ impl<'ctx> Compiler<'ctx> {
         let list_size = self.list_type.size_of().expect("list type has body");
         let cell = self
             .builder
-            .build_direct_call(self.malloc, &[list_size.into()], "cell")?
+            .build_direct_call(self.miniml_alloc, &[list_size.into()], "cell")?
             .try_as_basic_value()
             .expect_basic("malloc returns a value")
             .into_pointer_value();
@@ -206,7 +212,7 @@ impl<'ctx> Compiler<'ctx> {
         let size = self.closure_type.size_of().expect("closure type has body");
         let closure = self
             .builder
-            .build_direct_call(self.malloc, &[size.into()], "closure")?
+            .build_direct_call(self.miniml_alloc, &[size.into()], "closure")?
             .try_as_basic_value()
             .expect_basic("malloc returns a value")
             .into_pointer_value();
@@ -646,6 +652,10 @@ impl<'ctx> Compiler<'ctx> {
         let object = std::env::temp_dir().join(format!("miniml-{}.o", std::process::id()));
         self.write_object(&object)?;
 
+        let runtime = std::env::temp_dir().join(format!("miniml-{}-runtime.c", std::process::id()));
+        std::fs::write(&runtime, RUNTIME)
+            .map_err(|e| CodegenError::Link(format!("could not write runtime: {e}")))?;
+
         let cc = std::env::var("CC").unwrap_or_else(|_| "clang".to_string());
         let mut command = Command::new(&cc);
         if let Some(triple) = &self.target_triple {
@@ -653,11 +663,14 @@ impl<'ctx> Compiler<'ctx> {
         }
         let status = command
             .arg(&object)
+            .arg(&runtime)
+            .arg("-O2") // for runtime only
             .arg("-o")
             .arg(output)
             .status()
             .map_err(|e| CodegenError::Link(format!("could not run {cc}: {e}")))?;
         let _ = std::fs::remove_file(&object);
+        let _ = std::fs::remove_file(&runtime);
         if status.success() {
             Ok(())
         } else {
@@ -701,6 +714,12 @@ impl<'ctx> Compiler<'ctx> {
             .add_function("main", self.word.fn_type(&[], false), None);
         self.builder
             .position_at_end(self.context.append_basic_block(main, "entry"));
+        let miniml_init = self.module.add_function(
+            "miniml_init",
+            self.context.void_type().fn_type(&[], false),
+            None,
+        );
+        self.builder.build_direct_call(miniml_init, &[], "")?;
         self.env_slot = Some(self.new_env_slot(self.ptr_type.const_null())?);
 
         let result = self.compile_expression(program)?;
@@ -957,6 +976,13 @@ mod tests {
         targets::{InitializationConfig, Target},
     };
 
+    /// Stand-ins for runtime functions
+    extern "C" fn test_init() {}
+
+    extern "C" fn test_alloc(size: usize) -> *mut u8 {
+        unsafe { std::alloc::alloc(std::alloc::Layout::from_size_align(size, 16).unwrap()) }
+    }
+
     fn run(source: &str) -> i64 {
         // validate and run inkwell JIT
         let program = surface_to_core(Parser::parse(source).unwrap());
@@ -974,6 +1000,15 @@ mod tests {
             .module
             .create_jit_execution_engine(OptimizationLevel::None)
             .unwrap();
+        let module = &compiler.module;
+        engine.add_global_mapping(
+            &module.get_function("miniml_init").unwrap(),
+            test_init as *const () as usize,
+        );
+        engine.add_global_mapping(
+            &module.get_function("miniml_alloc").unwrap(),
+            test_alloc as *const () as usize,
+        );
         unsafe {
             engine
                 .get_function::<unsafe extern "C" fn() -> i64>("main")

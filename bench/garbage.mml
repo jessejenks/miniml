@@ -1,0 +1,7 @@
+let rec loop = fun n, acc =>
+    if n < 1 then acc else {
+        let inc = fun x => x + 1;
+        loop (n - 1) (inc acc)
+    };
+
+loop 1000000 0
