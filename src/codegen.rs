@@ -781,7 +781,13 @@ impl<'ctx> Compiler<'ctx> {
                 self.pushmark()?;
                 let arg = self.compile_expression(right)?;
                 self.push(arg)?;
-                let closure = self.compile_expression(left)?;
+                let mut spine = left;
+                while let ast::ExprKind::Application(left, right) = &spine.kind {
+                    let arg = self.compile_expression(right)?;
+                    self.push(arg)?;
+                    spine = left;
+                }
+                let closure = self.compile_expression(spine)?;
                 self.apply(closure)
             }
             ast::ExprKind::Abstraction(_, body) => {
@@ -837,7 +843,13 @@ impl<'ctx> Compiler<'ctx> {
             ast::ExprKind::Application(left, right) => {
                 let arg = self.compile_expression(right)?;
                 self.push(arg)?;
-                let closure = self.compile_expression(left)?;
+                let mut spine = left;
+                while let ast::ExprKind::Application(left, right) = &spine.kind {
+                    let arg = self.compile_expression(right)?;
+                    self.push(arg)?;
+                    spine = left;
+                }
+                let closure = self.compile_expression(spine)?;
                 self.appterm(closure)
             }
             ast::ExprKind::Abstraction(_, body) => {
