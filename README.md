@@ -2,7 +2,7 @@
 
 ![Tests](https://github.com/jessejenks/miniml/actions/workflows/test.yml/badge.svg)
 
-A small ML-style language that compiles to LLVM IR.
+A small ML-style language compiled with the ZINC abstract machine's scheme and LLVM.
 
 ```
 # factorial function
@@ -21,10 +21,8 @@ result
 ## Highlights
 
 This is a simple functional language inspired by CAML. It features a Hindley-Milner type checker with SML style equality
-types[^1] for `==` comparison. The compiler uses the ZINC abstract machine's compilation scheme, and is based on my
-previous ZINC project[^2].
-
-The compiler uses `inkwell`[^3] to write LLVM.
+types[^1] for `==` comparison. The compiler uses the ZINC[^2] abstract machine's compilation scheme, and is based on my
+previous ZINC project[^3]. It uses `inkwell`[^4] to write LLVM.
 
 Because the ZINC compilation scheme already tracks tail position, the compiler can use proper `tailcc` with `musttail`.
 
@@ -34,7 +32,8 @@ Like my existing WebAssembly version, the environment is a heap-allocated list, 
 and environments.
 
 Generated code allocates through a small C runtime ([`runtime/runtime.c`](runtime/runtime.c)), which is linked into
-every executable. It currently wraps `malloc` and counts allocations.
+every executable. It sets up the argument stack with guard pages, and wraps `malloc` to counts allocations. See
+[stats section below](#allocation-stats).
 
 ## Usage
 
@@ -80,8 +79,8 @@ MINIML_STATS=1 ./fact
 ```
 120
 - : Int = 120
-allocations: 26
-allocated bytes: 416
+allocations: 12
+allocated bytes: 192
 ```
 
 ## Building From Source
@@ -91,6 +90,8 @@ This project can be built like any normal Rust project
 ```sh
 cargo build
 ```
+
+A C compiler is also required, since `build.rs` compiles the runtime for the tests.
 
 The backend uses `inkwell` 0.11, which supports LLVM 12 through 23, but this project assumes LLVM 21.1.
 
@@ -181,7 +182,7 @@ let func = id (fun y, z => z);
 
 will output
 
-```sh
+```
 id : (∀α.α -> α)
 unit : Unit
 bool : Bool
@@ -198,11 +199,27 @@ This project includes a reference call-by-value interpreter.
 miniml fact.mml --interpret
 ```
 
-(The example program prints the result before returning).
-
 ```
 120
 - : Int = 120
+```
+
+Note that one difference between the interpreter and the compiled version is that
+
+```
+fun => 1
+```
+
+will print the actual term
+
+```
+- : (∀α.α -> Int) = (λ.1)
+```
+
+instead of
+
+```
+- : (∀α.α -> Int) = <fun>
 ```
 
 ### Code Generation
@@ -221,7 +238,7 @@ source_filename = "fact.mml"
 %list = type { i64, ptr }
 %closure = type { ptr, ptr }
 
-@ARGS = internal global ptr null
+@miniml_args = external global ptr
 @print.format = private unnamed_addr constant [6 x i8] c"%lld\0A\00", align 1
 
 declare ptr @miniml_alloc(i64)
@@ -239,7 +256,7 @@ entry:
   call void @miniml_init()
   %env.slot = alloca ptr, align 8
   ...
-  ret i64 %unboxed
+  ret i64 0
 }
 
 ...
@@ -247,15 +264,11 @@ entry:
 
 ## Running the LLVM IR
 
-The examples below expect the LLVM 21 tools (`lli`, `opt`, `llc`, `clang`). Older versions may not be able to read the
-generated IR.
-
 ```sh
 miniml fact.mml --codegen > fact.ll
 ```
 
-The IR only declares `miniml_init` and `miniml_alloc`, so the runtime has to come along. Interpret it by compiling the
-runtime to IR as well:
+Then compile the runtime to IR as well:
 
 ```sh
 clang -S -emit-llvm runtime/runtime.c -o runtime.ll
@@ -267,28 +280,10 @@ lli --extra-module=runtime.ll fact.ll
 - : Int = 120
 ```
 
-Or compile it with the runtime:
+Or just compile it with the runtime:
 
 ```sh
 clang fact.ll runtime/runtime.c -o fact
-```
-
-Note that the way the final value is displayed differs from the interpreter. In the interpreter, we have access to the entire term, so running `--interpret` on a program like this
-
-```
-fun => 1
-```
-
-will print the actual term
-
-```
-- : (∀α.α -> Int) = (λ.1)
-```
-
-while the compiled version will print
-
-```
-- : (∀α.α -> Int) = <fun>
 ```
 
 ## Future Work
@@ -299,11 +294,30 @@ while the compiled version will print
 - Algebraic data types
 - Pattern matching
 
+## Benchmarks
+
+I'm still working on implementing GC. However, I have started on optimizations already.
+
+In section 3.3.2 of The ZINC Experiment[^2], Leroy discusses how using multiple application instead of binary
+application to collect arguments will prevent unnecessary closures from being created. This change, along with replacing
+the linked-list argument stack with a bump-pointer array, dropped the number of allocations in the benchmark files by
+55%-70% compared to `5707e42`.
+
+| file                  | allocations removed |
+| --------------------- | ------------------- |
+| `bench/closures.mml`  | 60.01%              |
+| `bench/curried.mml`   | 70.59%              |
+| `bench/fib.mml`       | 66.67%              |
+| `bench/garbage.mml`   | 54.55%              |
+| `bench/recursion.mml` | 66.67%              |
+
 ---
 
 [^1]: _The Definition of Standard ML Revised_ "Types and Type Functions"
     ([source](https://github.com/SMLFamily/The-Definition-of-Standard-ML-Revised/blob/c4212f434cafd06669171619f7d332341a5b31f3/statcor.tex#L241))
 
-[^2]: My previous ZINC WebAssembly compiler and explainer: https://github.com/jessejenks/ZINC
+[^2]: _The Zinc Experiment_ ([source](https://xavierleroy.org/publi/ZINC.pdf))
 
-[^3]: The Inkwell crate: https://github.com/TheDan64/inkwell
+[^3]: My previous ZINC WebAssembly compiler and explainer: https://github.com/jessejenks/ZINC
+
+[^4]: The Inkwell crate: https://github.com/TheDan64/inkwell
