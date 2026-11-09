@@ -129,9 +129,7 @@ impl<'ctx> Compiler<'ctx> {
         let print_fn = module.add_function("print", lambda_type, Some(Linkage::Internal));
         print_fn.set_call_conventions(TAIL_CC);
 
-        let arg_stack = module.add_global(ptr_type, None, "ARGS");
-        arg_stack.set_initializer(&ptr_type.const_null());
-        arg_stack.set_linkage(Linkage::Internal);
+        let arg_stack = module.add_global(ptr_type, None, "miniml_args");
 
         let builder = context.create_builder();
 
@@ -267,7 +265,7 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
-    /// %cell = call ptr @cons(i64 head, ptr tail)
+    /// `%cell = call ptr @cons(i64 head, ptr tail)`
     fn cons(&self, head: IntValue<'ctx>, tail: PointerValue<'ctx>) -> Result<PointerValue<'ctx>> {
         Ok(self
             .builder
@@ -277,35 +275,62 @@ impl<'ctx> Compiler<'ctx> {
             .into_pointer_value())
     }
 
-    /// ARGS = cons(value, ARGS)
+    /// `ARGS.push(value)`
     fn push(&self, value: IntValue<'ctx>) -> Result<()> {
         let args = self.arg_stack.as_pointer_value();
-        let old = self
+        let stack_pointer = self
             .builder
-            .build_load(self.ptr_type, args, "args")?
+            .build_load(self.ptr_type, args, "args.sp")?
             .into_pointer_value();
-        let cell = self.cons(value, old)?;
-        self.builder.build_store(args, cell)?;
+        self.builder.build_store(stack_pointer, value)?;
+        let next = unsafe {
+            self.builder.build_gep(
+                self.word,
+                stack_pointer,
+                &[self.word.const_int(1, false)],
+                "args.next",
+            )
+        }?;
+        self.builder.build_store(args, next)?;
         Ok(())
     }
 
-    /// ARGS = cons(mark, ARGS)
+    /// `ARGS.push(mark)`
     fn pushmark(&self) -> Result<()> {
         self.push(self.word.const_zero())
     }
 
-    /// ARGS = ARGS.tail
+    /// address of value at top of argument stack
+    fn args_top(&self) -> Result<PointerValue<'ctx>> {
+        let args = self.arg_stack.as_pointer_value();
+        let stack_pointer = self
+            .builder
+            .build_load(self.ptr_type, args, "args.sp")?
+            .into_pointer_value();
+        Ok(unsafe {
+            self.builder.build_gep(
+                self.word,
+                stack_pointer,
+                &[self.word.const_all_ones()], // 1...1b = -1
+                "args.top",
+            )
+        }?)
+    }
+
+    /// `ARGS.peek()`
+    fn peek_args(&self) -> Result<IntValue<'ctx>> {
+        let top = self.args_top()?;
+        Ok(self
+            .builder
+            .build_load(self.word, top, "arg")?
+            .into_int_value())
+    }
+
+    /// `ARGS.pop()`
     fn pop_args(&self) -> Result<()> {
         let args = self.arg_stack.as_pointer_value();
-        let cell = self
-            .builder
-            .build_load(self.ptr_type, args, "args")?
-            .into_pointer_value();
-        let tail_ptr = self
-            .builder
-            .build_struct_gep(self.list_type, cell, 1, "args.tail")?;
-        let tail = self.builder.build_load(self.ptr_type, tail_ptr, "tail")?;
-        self.builder.build_store(args, tail)?;
+        let top = self.args_top()?;
+        self.builder.build_store(args, top)?;
         Ok(())
     }
 
@@ -326,13 +351,6 @@ impl<'ctx> Compiler<'ctx> {
         Ok(self
             .builder
             .build_load(self.ptr_type, p, "tail")?
-            .into_pointer_value())
-    }
-
-    fn load_args(&self) -> Result<PointerValue<'ctx>> {
-        Ok(self
-            .builder
-            .build_load(self.ptr_type, self.arg_stack.as_pointer_value(), "args")?
             .into_pointer_value())
     }
 
@@ -462,7 +480,7 @@ impl<'ctx> Compiler<'ctx> {
             .builder
             .build_int_to_ptr(closure, self.ptr_type, "closure")?;
 
-        let arg = self.head(self.load_args()?)?;
+        let arg = self.peek_args()?;
         let env_ptr =
             self.builder
                 .build_struct_gep(self.closure_type, closure, 1, "closure.env.ptr")?;
@@ -503,7 +521,7 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     fn branch_on_mark(&self, name: &str) -> Result<(BasicBlock<'ctx>, BasicBlock<'ctx>)> {
-        let head = self.head(self.load_args()?)?;
+        let head = self.peek_args()?;
         let is_mark = self.builder.build_int_compare(
             IntPredicate::EQ,
             head,
@@ -534,7 +552,7 @@ impl<'ctx> Compiler<'ctx> {
         self.builder.build_return(Some(&closure))?;
 
         self.builder.position_at_end(arg);
-        let value = self.head(self.load_args()?)?;
+        let value = self.peek_args()?;
         let new_env = self.cons(value, self.load_env()?)?;
         self.pop_args()?;
         let call = self
@@ -1013,6 +1031,12 @@ mod tests {
             .create_jit_execution_engine(OptimizationLevel::None)
             .unwrap();
         let module = &compiler.module;
+        let mut arg_stack = vec![0u64; 1 << 16];
+        let mut stack_pointer: *mut u64 = arg_stack.as_mut_ptr();
+        engine.add_global_mapping(
+            &module.get_global("miniml_args").unwrap(),
+            &raw mut stack_pointer as usize,
+        );
         engine.add_global_mapping(
             &module.get_function("miniml_init").unwrap(),
             test_init as *const () as usize,
