@@ -406,6 +406,7 @@ dependencies = [
 name = "miniml"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "clap",
  "inkwell",
  "miette",

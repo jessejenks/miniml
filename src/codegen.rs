@@ -1005,13 +1005,16 @@ mod tests {
         OptimizationLevel,
         targets::{InitializationConfig, Target},
     };
+    use std::sync::{Mutex, PoisonError};
 
-    /// Stand-ins for runtime functions
-    extern "C" fn test_init() {}
-
-    extern "C" fn test_alloc(size: usize) -> *mut u8 {
-        unsafe { std::alloc::alloc(std::alloc::Layout::from_size_align(size, 16).unwrap()) }
+    unsafe extern "C" {
+        static mut miniml_args: *mut u64;
+        fn miniml_init();
+        fn miniml_reset();
+        fn miniml_alloc(size: usize) -> *mut u8;
     }
+
+    static RUNTIME_LOCK: Mutex<()> = Mutex::new(());
 
     fn run(source: &str) -> i64 {
         // validate and run inkwell JIT
@@ -1031,25 +1034,26 @@ mod tests {
             .create_jit_execution_engine(OptimizationLevel::None)
             .unwrap();
         let module = &compiler.module;
-        let mut arg_stack = vec![0u64; 1 << 16];
-        let mut stack_pointer: *mut u64 = arg_stack.as_mut_ptr();
         engine.add_global_mapping(
             &module.get_global("miniml_args").unwrap(),
-            &raw mut stack_pointer as usize,
+            &raw mut miniml_args as usize,
         );
         engine.add_global_mapping(
             &module.get_function("miniml_init").unwrap(),
-            test_init as *const () as usize,
+            miniml_init as *const () as usize,
         );
         engine.add_global_mapping(
             &module.get_function("miniml_alloc").unwrap(),
-            test_alloc as *const () as usize,
+            miniml_alloc as *const () as usize,
         );
+        let _guard = RUNTIME_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         unsafe {
-            engine
+            let result = engine
                 .get_function::<unsafe extern "C" fn() -> i64>("main")
                 .unwrap()
-                .call()
+                .call();
+            miniml_reset();
+            result
         }
     }
 
