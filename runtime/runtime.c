@@ -18,6 +18,8 @@ static size_t guard_size;
 #define ARG_STACK_SIZE ((1 << 20) * sizeof(uint64_t))
 
 uint64_t *miniml_args;
+static uint64_t *args_base;
+static uint64_t *stack_base;
 
 static void print_stats(void) {
     fprintf(stderr, "allocations: %llu\nallocated bytes: %llu\n", allocations, allocated_bytes);
@@ -54,6 +56,7 @@ void miniml_init(void) {
         fputs("miniml: could not allocate argument stack\n", stderr);
         exit(1);
     }
+    args_base = miniml_args;
 
     const char *stats = getenv("MINIML_STATS");
     if (stats != NULL && stats[0] != '\0' && stats[0] != '0') {
@@ -63,13 +66,15 @@ void miniml_init(void) {
 
 #ifdef MINIML_TEST
 void miniml_reset(void) {
-    char *start = (char*)miniml_args - guard_size;
+    char *start = (char*)args_base - guard_size;
 #ifdef _WIN32
     VirtualFree(start, 0, MEM_RELEASE);
 #else
     munmap(start, ARG_STACK_SIZE + 2 * guard_size);
 #endif
     miniml_args = NULL;
+    args_base = NULL;
+    stack_base = NULL;
     allocations = 0;
     allocated_bytes = 0;
 }
@@ -85,3 +90,19 @@ void *miniml_alloc(size_t size) {
     }
     return p;
 }
+
+int64_t miniml_run(int64_t (*entry)(void)) {
+    volatile uint64_t marker = 0;
+    stack_base = (uint64_t *)&marker;
+    miniml_init();
+    int64_t result = entry();
+    return result;
+}
+
+#ifndef MINIML_TEST
+int64_t miniml_main(void);
+
+int main(void) {
+    return (int)miniml_run(miniml_main);
+}
+#endif

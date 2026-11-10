@@ -727,18 +727,12 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     pub fn compile(&mut self, program: &ast::Expr, kind: ResultKind, label: &str) -> Result<()> {
-        // define i64 @main() { entry: ... }
+        // define i64 @miniml_main() { entry: ... }
         let main = self
             .module
-            .add_function("main", self.word.fn_type(&[], false), None);
+            .add_function("miniml_main", self.word.fn_type(&[], false), None);
         self.builder
             .position_at_end(self.context.append_basic_block(main, "entry"));
-        let miniml_init = self.module.add_function(
-            "miniml_init",
-            self.context.void_type().fn_type(&[], false),
-            None,
-        );
-        self.builder.build_direct_call(miniml_init, &[], "")?;
         self.env_slot = Some(self.new_env_slot(self.ptr_type.const_null())?);
 
         let result = self.compile_expression(program)?;
@@ -1010,7 +1004,7 @@ mod tests {
 
     unsafe extern "C" {
         static mut miniml_args: *mut u64;
-        fn miniml_init();
+        fn miniml_run(entry: unsafe extern "C" fn() -> i64) -> i64;
         fn miniml_reset();
         fn miniml_alloc(size: usize) -> *mut u8;
     }
@@ -1040,19 +1034,16 @@ mod tests {
             &raw mut miniml_args as usize,
         );
         engine.add_global_mapping(
-            &module.get_function("miniml_init").unwrap(),
-            miniml_init as *const () as usize,
-        );
-        engine.add_global_mapping(
             &module.get_function("miniml_alloc").unwrap(),
             miniml_alloc as *const () as usize,
         );
         let _guard = RUNTIME_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         unsafe {
-            let result = engine
-                .get_function::<unsafe extern "C" fn() -> i64>("main")
+            let entry = engine
+                .get_function::<unsafe extern "C" fn() -> i64>("miniml_main")
                 .unwrap()
-                .call();
+                .into_raw();
+            let result = miniml_run(entry);
             miniml_reset();
             result
         }
