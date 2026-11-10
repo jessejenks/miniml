@@ -703,6 +703,7 @@ impl<'ctx> Compiler<'ctx> {
     fn target_machine(&self) -> Result<TargetMachine> {
         let config = InitializationConfig::default();
         Target::initialize_native(&config).map_err(CodegenError::Llvm)?;
+        #[cfg(feature = "aarch64")]
         Target::initialize_aarch64(&config);
         Target::initialize_x86(&config);
         let triple = match &self.target_triple {

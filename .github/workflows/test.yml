@@ -3,7 +3,9 @@ name: Tests
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md"]
   pull_request:
+    paths-ignore: ["**.md"]
 
 permissions:
   contents: read
@@ -31,3 +33,24 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+
+  windows:
+    runs-on: windows-latest
+    env:
+      LLVM_SYS_211_PREFIX: C:\llvm
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install LLVM 21
+        shell: bash
+        run: |
+          curl -fsSL -o llvm.7z https://github.com/vovkos/llvm-package-windows/releases/download/llvm-21.1.1/llvm-21.1.1-windows-amd64-msvc17-msvcrt.7z
+          7z x llvm.7z -o/c
+          mv /c/llvm-21.1.1-windows-amd64-msvc17-msvcrt /c/llvm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo test --no-default-features
