@@ -18,6 +18,9 @@ static size_t guard_size;
 #define ARG_STACK_SIZE ((1 << 20) * sizeof(uint64_t))
 #define HEAP_SIZE (1 << 30)
 #define CELL_SIZE 16
+#define DEFAULT_INITIAL_HEAP (1 << 20)
+
+static size_t initial_heap = DEFAULT_INITIAL_HEAP;
 
 uint64_t *miniml_args;
 static uint64_t *args_base;
@@ -30,6 +33,7 @@ static char *heap_end;
 
 static void print_stats(void) {
     fprintf(stderr, "allocations: %llu\nallocated bytes: %llu\n", allocations, allocated_bytes);
+    fprintf(stderr, "peak heap: %llu\n", (unsigned long long)(heap_top - heap_base));
 }
 
 static char *reserve_arg_stack(void) {
@@ -58,20 +62,19 @@ static char *reserve_arg_stack(void) {
 }
 
 static int reserve_heap(void) {
-    size_t init_heap_size = (1 << 20);
 #ifdef _WIN32
     // have to reserve full, and separate commit used part
     // mmap will lazily do this for us.
     char *start = VirtualAlloc(NULL, HEAP_SIZE, MEM_RESERVE, PAGE_READWRITE);
     if (start == NULL) return -1;
-    if (VirtualAlloc(start, init_heap_size, MEM_COMMIT, PAGE_READWRITE) == NULL) return -1;
+    if (VirtualAlloc(start, initial_heap, MEM_COMMIT, PAGE_READWRITE) == NULL) return -1;
 #else
     char* start = (char*)mmap(NULL, HEAP_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (start == MAP_FAILED) return -1;
 #endif
     heap_base = start;
     heap_top = start;
-    heap_capacity = start + init_heap_size;
+    heap_capacity = start + initial_heap;
     heap_end = start + HEAP_SIZE;
     return 0;
 }
@@ -90,6 +93,17 @@ static int grow_heap(void) {
 
 
 void miniml_init(void) {
+    const char *initial = getenv("MINIML_INITIAL_HEAP");
+    if (initial != NULL) {
+        char *end;
+        unsigned long long n = strtoull(initial, &end, 10);
+        if (end == initial || *end != '\0' || n == 0 || n > HEAP_SIZE) {
+            fputs("miniml: MINIML_INITIAL_HEAP must be a byte count between 1 and the heap size\n", stderr);
+            exit(1);
+        }
+        initial_heap = n;
+    }
+
     miniml_args = (uint64_t*)reserve_arg_stack();
     if (miniml_args == NULL) {
         fputs("miniml: could not allocate argument stack\n", stderr);
@@ -130,6 +144,11 @@ void miniml_reset(void) {
     heap_end = NULL;
     allocations = 0;
     allocated_bytes = 0;
+    initial_heap = DEFAULT_INITIAL_HEAP;
+}
+
+void miniml_set_initial_heap(size_t bytes) {
+    initial_heap = bytes;
 }
 #endif
 
