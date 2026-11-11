@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
+#include <setjmp.h>
+#include <time.h>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -10,6 +13,10 @@
 
 static unsigned long long allocations;
 static unsigned long long allocated_bytes;
+static unsigned long long collections;
+static unsigned long long live_bytes;
+static unsigned long long max_live_bytes;
+static double gc_seconds;
 
 #ifdef MINIML_TEST
 static size_t guard_size;
@@ -21,6 +28,7 @@ static size_t guard_size;
 #define DEFAULT_INITIAL_HEAP (1 << 20)
 
 static size_t initial_heap = DEFAULT_INITIAL_HEAP;
+static int gc_stress;
 
 uint64_t *miniml_args;
 static uint64_t *args_base;
@@ -31,9 +39,22 @@ static char *heap_top;
 static char *heap_capacity;
 static char *heap_end;
 
+static uint8_t *mark_bits; // bitset of marked cells
+static unsigned long long marked_cell_count;
+static struct { uint64_t **items; size_t len, cap; } mark_stack;
+
+#ifdef _MSC_VER
+#define NOINLINE __declspec(noinline)
+#else
+#define NOINLINE __attribute__((noinline))
+#endif
+
 static void print_stats(void) {
     fprintf(stderr, "allocations: %llu\nallocated bytes: %llu\n", allocations, allocated_bytes);
     fprintf(stderr, "peak heap: %llu\n", (unsigned long long)(heap_top - heap_base));
+    fprintf(stderr, "collections: %llu\n", collections);
+    fprintf(stderr, "max live bytes: %llu\nfinal live bytes: %llu\n", max_live_bytes, live_bytes);
+    fprintf(stderr, "gc seconds: %.3f\n", gc_seconds);
 }
 
 static char *reserve_arg_stack(void) {
@@ -104,6 +125,11 @@ void miniml_init(void) {
         initial_heap = n;
     }
 
+    const char *stress = getenv("MINIML_GC_STRESS");
+    if (stress != NULL) {
+        gc_stress = stress[0] != '\0' && stress[0] != '0';
+    }
+
     miniml_args = (uint64_t*)reserve_arg_stack();
     if (miniml_args == NULL) {
         fputs("miniml: could not allocate argument stack\n", stderr);
@@ -113,6 +139,12 @@ void miniml_init(void) {
 
     if (reserve_heap() == -1) {
         fputs("miniml: could not allocate heap\n", stderr);
+        exit(1);
+    }
+
+    mark_bits = calloc(HEAP_SIZE / CELL_SIZE / 8, 1);
+    if (mark_bits == NULL) {
+        fputs("miniml: could not allocate mark bits\n", stderr);
         exit(1);
     }
 
@@ -142,15 +174,98 @@ void miniml_reset(void) {
     heap_top = NULL;
     heap_capacity = NULL;
     heap_end = NULL;
+    free(mark_bits);
+    mark_bits = NULL;
+    free(mark_stack.items);
+    mark_stack.items = NULL;
+    mark_stack.len = 0;
+    mark_stack.cap = 0;
     allocations = 0;
     allocated_bytes = 0;
+    collections = 0;
+    live_bytes = 0;
+    max_live_bytes = 0;
+    gc_seconds = 0;
     initial_heap = DEFAULT_INITIAL_HEAP;
+    gc_stress = 0;
 }
 
 void miniml_set_initial_heap(size_t bytes) {
     initial_heap = bytes;
 }
+
+void miniml_set_gc_stress(int on) {
+    gc_stress = on;
+}
 #endif
+
+static int is_cell(uint64_t w) {
+    return w != 0 && (w & 15) == 0
+        && w >= (uint64_t)heap_base && w < (uint64_t)heap_top;
+}
+
+static uint64_t *containing_cell(uint64_t w) {
+    if (w < (uint64_t)heap_base || w >= (uint64_t)heap_top) return NULL;
+    return (uint64_t *)(w & ~(uint64_t)15);
+}
+
+static void push_mark_stack(uint64_t *c) {
+    if (mark_stack.len == mark_stack.cap) {
+        mark_stack.cap = mark_stack.cap == 0 ? 1024 : 2 * mark_stack.cap;
+        mark_stack.items = realloc(mark_stack.items, mark_stack.cap * sizeof(uint64_t *));
+        if (mark_stack.items == NULL) {
+            fputs("miniml: could not grow mark stack\n", stderr);
+            exit(1);
+        }
+    }
+    mark_stack.items[mark_stack.len++] = c;
+}
+
+static uint64_t *pop_mark_stack(void) {
+    return mark_stack.items[--mark_stack.len];
+}
+
+static void mark_cell(uint64_t *c) {
+    size_t i = ((char *)c - heap_base) / CELL_SIZE;
+    uint8_t bit = (uint8_t)(1 << (i % 8));
+    size_t idx = i / 8;
+    if (mark_bits[idx] & bit) return;
+    mark_bits[idx] |= bit;
+    marked_cell_count++;
+    push_mark_stack(c);
+}
+
+static NOINLINE void collect(void) {
+    clock_t start = clock();
+
+    // union to force 8-byte alignment
+    union { jmp_buf buf; uint64_t align; } regs;
+    // setjmp copies callee saved registers into `regs.buf`.
+    // may want __builtin_unwind_init? https://maskray.me/blog/stack-unwinding
+    // because -02 can change order of things depending on platform/version
+    setjmp(regs.buf);
+
+    marked_cell_count = 0;
+    for (uint64_t *w = (uint64_t *)&regs; w < stack_base; w++) {
+        uint64_t *c = containing_cell(*w);
+        if (c) mark_cell(c);
+    }
+    for (uint64_t *w = args_base; w < miniml_args; w++) {
+        if (is_cell(*w)) mark_cell((uint64_t *)*w);
+    }
+    while (mark_stack.len > 0) {
+        uint64_t *c = pop_mark_stack();
+        if (is_cell(c[0])) mark_cell((uint64_t *)c[0]);
+        if (is_cell(c[1])) mark_cell((uint64_t *)c[1]);
+    }
+
+    live_bytes = marked_cell_count * CELL_SIZE;
+    if (live_bytes > max_live_bytes) max_live_bytes = live_bytes;
+    // num bits to set = ceil(heap size in bytes / 8)
+    memset(mark_bits, 0, ((heap_top - heap_base) / CELL_SIZE + 7) / 8);
+    collections++;
+    gc_seconds += (double)(clock() - start) / CLOCKS_PER_SEC;
+}
 
 void *miniml_alloc(size_t size) {
     allocations++;
@@ -161,7 +276,10 @@ void *miniml_alloc(size_t size) {
         exit(1);
     }
 
+    if (gc_stress) collect();
+
     if (heap_top + size > heap_capacity) {
+        collect();
         if (grow_heap() == -1) {
             fputs("miniml: out of memory\n", stderr);
             exit(1);
