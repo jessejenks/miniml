@@ -16,33 +16,40 @@ static size_t guard_size;
 #endif
 
 #define ARG_STACK_SIZE ((1 << 20) * sizeof(uint64_t))
+#define HEAP_SIZE (1 << 30)
+#define CELL_SIZE 16
 
 uint64_t *miniml_args;
 static uint64_t *args_base;
 static uint64_t *stack_base;
 
+static char *heap_base;
+static char *heap_top;
+static char *heap_capacity;
+static char *heap_end;
+
 static void print_stats(void) {
     fprintf(stderr, "allocations: %llu\nallocated bytes: %llu\n", allocations, allocated_bytes);
 }
 
-static char *reserve_guarded(size_t stack_size) {
+static char *reserve_arg_stack(void) {
 #ifdef _WIN32
     SYSTEM_INFO info;
     GetSystemInfo(&info);
     size_t page_size = info.dwPageSize;
-    char *start = VirtualAlloc(NULL, stack_size + 2 * page_size, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
+    char *start = VirtualAlloc(NULL, ARG_STACK_SIZE + 2 * page_size, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
     if (start == NULL) return NULL;
     DWORD old;
     if (!VirtualProtect(start, page_size, PAGE_NOACCESS, &old) ||
-        !VirtualProtect(start + page_size + stack_size, page_size, PAGE_NOACCESS, &old)) return NULL;
+        !VirtualProtect(start + page_size + ARG_STACK_SIZE, page_size, PAGE_NOACCESS, &old)) return NULL;
 #else
     size_t page_size = sysconf(_SC_PAGESIZE);
-    char* start = (char*)mmap(NULL, stack_size + 2 * page_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    char* start = (char*)mmap(NULL, ARG_STACK_SIZE + 2 * page_size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
     if (start == MAP_FAILED) return NULL;
     // | PROT_NONE | PROT_READ|PROT_WRITE | PROT_NONE |
     // | page      | arg stack            | page      |
     if (mprotect(start, page_size, PROT_NONE) == -1) return NULL;
-    if (mprotect(start + page_size + stack_size, page_size, PROT_NONE) == -1) return NULL;
+    if (mprotect(start + page_size + ARG_STACK_SIZE, page_size, PROT_NONE) == -1) return NULL;
 #endif
 #ifdef MINIML_TEST
     guard_size = page_size;
@@ -50,13 +57,50 @@ static char *reserve_guarded(size_t stack_size) {
     return start + page_size;
 }
 
+static int reserve_heap(void) {
+    size_t init_heap_size = (1 << 20);
+#ifdef _WIN32
+    // have to reserve full, and separate commit used part
+    // mmap will lazily do this for us.
+    char *start = VirtualAlloc(NULL, HEAP_SIZE, MEM_RESERVE, PAGE_READWRITE);
+    if (start == NULL) return -1;
+    if (VirtualAlloc(start, init_heap_size, MEM_COMMIT, PAGE_READWRITE) == NULL) return -1;
+#else
+    char* start = (char*)mmap(NULL, HEAP_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
+    if (start == MAP_FAILED) return -1;
+#endif
+    heap_base = start;
+    heap_top = start;
+    heap_capacity = start + init_heap_size;
+    heap_end = start + HEAP_SIZE;
+    return 0;
+}
+
+static int grow_heap(void) {
+    // try to grow the heap until we hit HEAP_SIZE
+    if (heap_capacity == heap_end) return -1;
+    size_t grow_size = heap_capacity - heap_base;
+    if (grow_size > (size_t)(heap_end - heap_capacity)) grow_size = heap_end - heap_capacity;
+#ifdef _WIN32
+    if (VirtualAlloc(heap_capacity, grow_size, MEM_COMMIT, PAGE_READWRITE) == NULL) return -1;
+#endif
+    heap_capacity += grow_size;
+    return 0;
+}
+
+
 void miniml_init(void) {
-    miniml_args = (uint64_t*)reserve_guarded(ARG_STACK_SIZE);
+    miniml_args = (uint64_t*)reserve_arg_stack();
     if (miniml_args == NULL) {
         fputs("miniml: could not allocate argument stack\n", stderr);
         exit(1);
     }
     args_base = miniml_args;
+
+    if (reserve_heap() == -1) {
+        fputs("miniml: could not allocate heap\n", stderr);
+        exit(1);
+    }
 
     const char *stats = getenv("MINIML_STATS");
     if (stats != NULL && stats[0] != '\0' && stats[0] != '0') {
@@ -72,9 +116,18 @@ void miniml_reset(void) {
 #else
     munmap(start, ARG_STACK_SIZE + 2 * guard_size);
 #endif
+#ifdef _WIN32
+    VirtualFree(heap_base, 0, MEM_RELEASE);
+#else
+    munmap(heap_base, HEAP_SIZE);
+#endif
     miniml_args = NULL;
     args_base = NULL;
     stack_base = NULL;
+    heap_base = NULL;
+    heap_top = NULL;
+    heap_capacity = NULL;
+    heap_end = NULL;
     allocations = 0;
     allocated_bytes = 0;
 }
@@ -83,11 +136,21 @@ void miniml_reset(void) {
 void *miniml_alloc(size_t size) {
     allocations++;
     allocated_bytes += size;
-    void *p = malloc(size);
-    if (p == NULL) {
-        fputs("miniml: out of memory\n", stderr);
+
+    if (size != CELL_SIZE) {
+        fputs("miniml: unsupported object size\n", stderr);
         exit(1);
     }
+
+    if (heap_top + size > heap_capacity) {
+        if (grow_heap() == -1) {
+            fputs("miniml: out of memory\n", stderr);
+            exit(1);
+        }
+    }
+
+    void *p = heap_top;
+    heap_top += size;
     return p;
 }
 
