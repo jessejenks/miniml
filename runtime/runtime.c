@@ -26,6 +26,7 @@ static size_t guard_size;
 #define HEAP_SIZE (1 << 30)
 #define CELL_SIZE 16
 #define DEFAULT_INITIAL_HEAP (1 << 20)
+#define POISON 0xD15EA5EDDEADBEEFull
 
 static size_t initial_heap = DEFAULT_INITIAL_HEAP;
 static int gc_stress;
@@ -38,6 +39,7 @@ static char *heap_base;
 static char *heap_top;
 static char *heap_capacity;
 static char *heap_end;
+static uint64_t *free_list;
 
 static uint8_t *mark_bits; // bitset of marked cells
 static unsigned long long marked_cell_count;
@@ -174,6 +176,7 @@ void miniml_reset(void) {
     heap_top = NULL;
     heap_capacity = NULL;
     heap_end = NULL;
+    free_list = NULL;
     free(mark_bits);
     mark_bits = NULL;
     free(mark_stack.items);
@@ -235,6 +238,23 @@ static void mark_cell(uint64_t *c) {
     push_mark_stack(c);
 }
 
+static void sweep(void) {
+    uint64_t *new_free_list = NULL;
+    size_t cells = (heap_top - heap_base) / CELL_SIZE;
+    // we sweep from highest address so that final free list starts at the lowest address
+    for (size_t i = cells; i-- > 0;) {
+        if (mark_bits[i / 8] & (1 << (i % 8))) continue;
+        uint64_t *c = (uint64_t *)(heap_base + i * CELL_SIZE);
+        // replace freed with [ ptr | 1 ][ poison ]
+        // poison value is chosen to be odd so is_cell returns false
+        // addresses are 16 byte aligned, so last 4 bits of c[0] are always 0001. See take_cell
+        c[0] = (uint64_t)new_free_list | 1;
+        c[1] = POISON;
+        new_free_list = c;
+    }
+    free_list = new_free_list;
+}
+
 static NOINLINE void collect(void) {
     clock_t start = clock();
 
@@ -261,10 +281,27 @@ static NOINLINE void collect(void) {
 
     live_bytes = marked_cell_count * CELL_SIZE;
     if (live_bytes > max_live_bytes) max_live_bytes = live_bytes;
+    sweep();
     // num bits to set = ceil(heap size in bytes / 8)
     memset(mark_bits, 0, ((heap_top - heap_base) / CELL_SIZE + 7) / 8);
     collections++;
     gc_seconds += (double)(clock() - start) / CLOCKS_PER_SEC;
+}
+
+static void *take_cell(void) {
+    if (free_list != NULL) {
+        // pop from free list, if non-empty
+        uint64_t *c = free_list;
+        free_list = (uint64_t *)(c[0] & ~(uint64_t)1);
+        return c;
+    }
+    if (heap_top + CELL_SIZE <= heap_capacity) {
+        // otherwise take from existing heap capacity
+        void *p = heap_top;
+        heap_top += CELL_SIZE;
+        return p;
+    }
+    return NULL;
 }
 
 void *miniml_alloc(size_t size) {
@@ -278,16 +315,18 @@ void *miniml_alloc(size_t size) {
 
     if (gc_stress) collect();
 
-    if (heap_top + size > heap_capacity) {
+    void *p = take_cell();
+    if (p == NULL) {
         collect();
+        p = take_cell();
+    }
+    if (p == NULL) {
         if (grow_heap() == -1) {
             fputs("miniml: out of memory\n", stderr);
             exit(1);
         }
+        p = take_cell();
     }
-
-    void *p = heap_top;
-    heap_top += size;
     return p;
 }
 
