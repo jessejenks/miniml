@@ -282,6 +282,9 @@ static NOINLINE void collect(void) {
     live_bytes = marked_cell_count * CELL_SIZE;
     if (live_bytes > max_live_bytes) max_live_bytes = live_bytes;
     sweep();
+    // if we've used more than half of remaining capacity, double heap size.
+    // note: an error from grow_heap is ignored and caught later in miniml_alloc
+    if (live_bytes > (unsigned long long)(heap_capacity - heap_base) / 2) grow_heap();
     // num bits to set = ceil(heap size in bytes / 8)
     memset(mark_bits, 0, ((heap_top - heap_base) / CELL_SIZE + 7) / 8);
     collections++;
