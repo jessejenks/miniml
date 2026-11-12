@@ -7,10 +7,11 @@ pub fn surface_to_core(program: surface::Expr) -> ast::Expr {
 
 fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) -> ast::Expr {
     let kind = match expr.kind {
-        surface::ExprKind::Char(_) | surface::ExprKind::String(_) => todo!(),
         surface::ExprKind::Unit => ast::ExprKind::Unit,
+        surface::ExprKind::Char(c) => ast::ExprKind::Char(c),
         surface::ExprKind::Bool(b) => ast::ExprKind::Bool(b),
         surface::ExprKind::Int(n) => ast::ExprKind::Int(n),
+        surface::ExprKind::String(s) => ast::ExprKind::String(s.to_string()),
         surface::ExprKind::Variable(x) => match scope.iter().rev().position(|&n| n == x) {
             Some(index) => ast::ExprKind::BoundVariable(i64::try_from(index).unwrap()),
             None => ast::ExprKind::FreeVariable(x.to_string()),
@@ -112,7 +113,9 @@ mod tests {
         assert_eq!(elab("()").to_string(), "()");
         assert_eq!(elab("true").to_string(), "true");
         assert_eq!(elab("false").to_string(), "false");
+        assert_eq!(elab("'c'").to_string(), "'c'");
         assert_eq!(elab("1").to_string(), "1");
+        assert_eq!(elab("\"hello\"").to_string(), "\"hello\"");
         assert_eq!(elab("fun x => x").to_string(), "(λ.#0)");
         assert_eq!(elab("fun x => fun y => x").to_string(), "(λ.(λ.#1))");
         assert_eq!(elab("fun x, y => x").to_string(), "(λ.(λ.#1))");

@@ -785,7 +785,9 @@ impl<'ctx> Compiler<'ctx> {
         match &expr.kind {
             ast::ExprKind::Unit
             | ast::ExprKind::Bool(_)
+            | ast::ExprKind::Char(_)
             | ast::ExprKind::Int(_)
+            | ast::ExprKind::String(_)
             | ast::ExprKind::Unary(..)
             | ast::ExprKind::Binary(..) => self.compile_primitive(expr),
             ast::ExprKind::BoundVariable(n) => self.access(*n),
@@ -845,7 +847,9 @@ impl<'ctx> Compiler<'ctx> {
         match &expr.kind {
             ast::ExprKind::Unit
             | ast::ExprKind::Bool(_)
+            | ast::ExprKind::Char(_)
             | ast::ExprKind::Int(_)
+            | ast::ExprKind::String(_)
             | ast::ExprKind::Unary(..)
             | ast::ExprKind::Binary(..)
             | ast::ExprKind::BoundVariable(_)
@@ -896,6 +900,7 @@ impl<'ctx> Compiler<'ctx> {
 
     fn compile_primitive(&mut self, expr: &ast::Expr) -> Result<IntValue<'ctx>> {
         match &expr.kind {
+            ast::ExprKind::Char(_) | ast::ExprKind::String(_) => todo!(),
             ast::ExprKind::Unit => self.box_const(0),
             ast::ExprKind::Bool(b) => self.box_const(i64::from(*b)),
             ast::ExprKind::Int(n) => self.box_const(*n),

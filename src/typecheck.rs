@@ -193,6 +193,7 @@ impl TypeChecker {
 
     fn algorithm_j(&mut self, expr: &ast::Expr) -> Result<TypeExpr> {
         match &expr.kind {
+            ast::ExprKind::Char(_) | ast::ExprKind::String(_) => todo!(),
             ast::ExprKind::Unit => Ok(TypeExpr::Unit),
             ast::ExprKind::Bool(_) => Ok(TypeExpr::Bool),
             ast::ExprKind::Int(_) => Ok(TypeExpr::Int),
