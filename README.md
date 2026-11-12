@@ -4,12 +4,13 @@
 
 A small ML-style language compiled with the ZINC abstract machine's scheme and LLVM.
 
-```
+```sml
 # factorial function
-let rec fact = fun n =>
+let rec fact = fun n => {
     if n < 2
         then 1
-        else n * fact (n - 1);
+        else n * fact (n - 1)
+}
 
 let result = fact 5;
 
@@ -20,20 +21,24 @@ result
 
 ## Highlights
 
-This is a simple functional language inspired by CAML. It features a Hindley-Milner type checker with SML style equality
-types[^1] for `==` comparison. The compiler uses the ZINC[^2] abstract machine's compilation scheme, and is based on my
-previous ZINC project[^3]. It uses `inkwell`[^4] to write LLVM.
+This is a simple functional language inspired by CAML that compiles to native executables through LLVM using
+`inkwell`[^1].
 
-Because the ZINC compilation scheme already tracks tail position, the compiler can use proper `tailcc` with `musttail`.
+The compiler uses the ZINC[^2] abstract machine's compilation scheme, and is based on my previous ZINC project[^3].
 
-Values are 64-bit words with 63-bit tagged integers or pointers to closures.
+It features:
 
-Like my existing WebAssembly version, the environment is a heap-allocated list, and closures are pairs of code pointers
-and environments.
+- A Hindley-Milner type checker with SML style equality types[^4] for `==` comparison
+- Proper tails calls with `tailcc` and `musttail`
+- A [small C runtime](runtime/runtime.c) with a non-moving mark-sweep garbage collector
 
-Generated code allocates through a small C runtime ([`runtime/runtime.c`](runtime/runtime.c)), which is linked into
-every executable. It sets up the argument stack with guard pages, and wraps `malloc` to counts allocations. See
-[stats section below](#allocation-stats).
+Compared to the initial runtime (`5707e42`), I've already improved performance of benchmark programs at `-O0` to
+
+- make ~64% fewer allocations,
+- use ~97% less (peak) memory, and
+- run ~6.3x faster.
+
+See [the benchmarks section](#benchmarks) below for more details.
 
 ## Usage
 
@@ -65,7 +70,7 @@ Object files (`-c`) and assembly (`-S`) don't include the runtime, so link it yo
 
 ```sh
 miniml fact.mml -c
-clang fact.o runtime/runtime.c -o fact
+$CC fact.o runtime/runtime.c -o fact
 ```
 
 ### Allocation Stats
@@ -81,6 +86,11 @@ MINIML_STATS=1 ./fact
 - : Int = 120
 allocations: 12
 allocated bytes: 192
+peak heap: 192
+collections: 0
+max live bytes: 0
+final live bytes: 0
+gc seconds: 0.000
 ```
 
 ## Building From Source
@@ -231,6 +241,8 @@ miniml fact.mml --codegen -O2 # to run LLVM -O2
 
 Prints LLVM IR to stdout.
 
+It should look something like this
+
 ```llvm
 ; ModuleID = 'fact.mml'
 source_filename = "fact.mml"
@@ -239,85 +251,119 @@ source_filename = "fact.mml"
 %closure = type { ptr, ptr }
 
 @miniml_args = external global ptr
-@print.format = private unnamed_addr constant [6 x i8] c"%lld\0A\00", align 1
+; ...
 
 declare ptr @miniml_alloc(i64)
 
 declare i32 @printf(ptr, ...)
-...
+; ...
 
 define internal tailcc i64 @print(ptr %env) {
 entry:
-  ...
+  ; ...
 }
 
-define i64 @main() {
+define i64 @miniml_main() {
 entry:
-  call void @miniml_init()
-  %env.slot = alloca ptr, align 8
-  ...
+  ; ...
   ret i64 0
 }
 
-...
+; ...
 ```
 
 ## Running the LLVM IR
+
+If you want to compile from the generated LLVM directly, you'll need to include the runtime as well.
 
 ```sh
 miniml fact.mml --codegen > fact.ll
 ```
 
-Then compile the runtime to IR as well:
+You can compile the runtime to LLVM and use `lli`
 
 ```sh
-clang -S -emit-llvm runtime/runtime.c -o runtime.ll
+$CC -S -emit-llvm runtime/runtime.c -o runtime.ll
 lli --extra-module=runtime.ll fact.ll
 ```
 
-```
-120
-- : Int = 120
-```
-
-Or just compile it with the runtime:
+Or directly compile them together
 
 ```sh
-clang fact.ll runtime/runtime.c -o fact
+$CC fact.ll runtime/runtime.c -o fact
+./fact
 ```
+
+## Internals
+
+Values are 64-bit words with 63-bit tagged integers or pointers to closures.
+
+Like my existing WebAssembly version[^3], the environment is a heap-allocated list, and closures are pairs of code
+pointers and environments. But this project includes several optimizations, and manages its own garbage collection. The
+WASM version relies on the GC extension.
+
+In section 3.3.2 of The ZINC Experiment[^2], Leroy discusses how using multiple application instead of binary
+application to collect arguments will prevent unnecessary closures from being created.
+
+### Benchmarks
+
+The linked-list argument stack with a bump-pointer array dropped the number of allocations significantly. This reduces
+the number of allocations required at all, but to make more efficient use of memory requires memory management.
+
+All values are percent reduction relative to `5707e42`. A `-` indicates no change in allocations.
+
+Benchmark numbers come from statistics captured in the runtime and from hyperfine[^5] version 2.0.0. This table only
+compares programs compiled with `-O0`.
+
+| file            | commit    | allocations | peak memory | wall time |
+| --------------- | --------- | ----------: | ----------: | --------: |
+| `closures.mml`  | `fc1e20b` |      20.02% |      19.88% |    17.17% |
+|                 | `ad2056d` |      60.01% |      59.53% |    54.26% |
+|                 | `5520f05` |           - |      60.23% |    82.07% |
+|                 | `c348bb2` |           - |      60.04% |    81.91% |
+|                 | `b8044f3` |           - |      98.66% |    82.29% |
+|                 |           |             |             |           |
+| `curried.mml`   | `fc1e20b` |      35.29% |      35.17% |    36.14% |
+|                 | `ad2056d` |      70.59% |      70.31% |    69.03% |
+|                 | `5520f05` |           - |      70.80% |    88.76% |
+|                 | `c348bb2` |           - |      70.61% |    89.17% |
+|                 | `b8044f3` |           - |      99.24% |    89.54% |
+|                 |           |             |             |           |
+| `fib.mml`       | `fc1e20b` |       0.00% |      -0.33% |   -16.17% |
+|                 | `ad2056d` |      66.67% |      64.26% |    62.03% |
+|                 | `5520f05` |           - |      64.92% |    80.45% |
+|                 | `c348bb2` |           - |      64.59% |    80.08% |
+|                 | `b8044f3` |           - |      93.44% |    81.20% |
+|                 |           |             |             |           |
+| `garbage.mml`   | `fc1e20b` |      18.18% |      18.07% |    19.31% |
+|                 | `ad2056d` |      54.55% |      54.20% |    52.43% |
+|                 | `5520f05` |           - |      54.95% |    85.69% |
+|                 | `c348bb2` |           - |      54.66% |    84.92% |
+|                 | `b8044f3` |           - |      98.83% |    86.19% |
+|                 |           |             |             |           |
+| `recursion.mml` | `fc1e20b` |       0.01% |       0.00% |     0.44% |
+|                 | `ad2056d` |      66.67% |      64.18% |    54.07% |
+|                 | `5520f05` |           - |      64.60% |    73.85% |
+|                 | `c348bb2` |           - |      64.39% |    73.41% |
+|                 | `b8044f3` |           - |      94.00% |    72.09% |
 
 ## Future Work
 
-- A proper garbage collector (memory is currently never freed)
-- Strings
-- Tuple types
-- Algebraic data types
-- Pattern matching
-
-## Benchmarks
-
-I'm still working on implementing GC. However, I have started on optimizations already.
-
-In section 3.3.2 of The ZINC Experiment[^2], Leroy discusses how using multiple application instead of binary
-application to collect arguments will prevent unnecessary closures from being created. This change, along with replacing
-the linked-list argument stack with a bump-pointer array, dropped the number of allocations in the benchmark files by
-55%-70% compared to `5707e42`.
-
-| file                  | allocations removed |
-| --------------------- | ------------------- |
-| `bench/closures.mml`  | 60.01%              |
-| `bench/curried.mml`   | 70.59%              |
-| `bench/fib.mml`       | 66.67%              |
-| `bench/garbage.mml`   | 54.55%              |
-| `bench/recursion.mml` | 66.67%              |
+- [x] garbage collector
+- [ ] Strings
+- [ ] Tuple types
+- [ ] Algebraic data types
+- [ ] Pattern matching
 
 ---
 
-[^1]: _The Definition of Standard ML Revised_ "Types and Type Functions"
-    ([source](https://github.com/SMLFamily/The-Definition-of-Standard-ML-Revised/blob/c4212f434cafd06669171619f7d332341a5b31f3/statcor.tex#L241))
+[^1]: The Inkwell crate: https://github.com/TheDan64/inkwell
 
 [^2]: _The Zinc Experiment_ ([source](https://xavierleroy.org/publi/ZINC.pdf))
 
 [^3]: My previous ZINC WebAssembly compiler and explainer: https://github.com/jessejenks/ZINC
 
-[^4]: The Inkwell crate: https://github.com/TheDan64/inkwell
+[^4]: _The Definition of Standard ML Revised_ "Types and Type Functions"
+    ([source](https://github.com/SMLFamily/The-Definition-of-Standard-ML-Revised/blob/c4212f434cafd06669171619f7d332341a5b31f3/statcor.tex#L241))
+
+[^5]: Hyperfine benchmarking tool: https://github.com/sharkdp/hyperfine
