@@ -9,7 +9,9 @@ use crate::ast;
 pub enum TypeExpr {
     Unit,
     Bool,
+    Char,
     Int,
+    String,
     Var(i64, bool), // is this an eq variable
     UnifVar(u32),
     Arrow(Rc<TypeExpr>, Rc<TypeExpr>),
@@ -39,7 +41,12 @@ impl TypeExpr {
 
     pub fn max_type_variable_level(tp: &TypeExpr) -> i64 {
         match tp {
-            TypeExpr::Unit | TypeExpr::Bool | TypeExpr::Int | TypeExpr::UnifVar(_) => -1,
+            TypeExpr::Unit
+            | TypeExpr::Bool
+            | TypeExpr::Char
+            | TypeExpr::Int
+            | TypeExpr::String
+            | TypeExpr::UnifVar(_) => -1,
             TypeExpr::Var(level, _) => *level,
             TypeExpr::Arrow(src, tgt) => cmp::max(
                 Self::max_type_variable_level(src),
@@ -58,7 +65,9 @@ impl Display for TypeExpr {
         match self {
             TypeExpr::Unit => write!(f, "Unit"),
             TypeExpr::Bool => write!(f, "Bool"),
+            TypeExpr::Char => write!(f, "Char"),
             TypeExpr::Int => write!(f, "Int"),
+            TypeExpr::String => write!(f, "String"),
             TypeExpr::Var(level, eq) => {
                 write!(
                     f,
@@ -193,10 +202,11 @@ impl TypeChecker {
 
     fn algorithm_j(&mut self, expr: &ast::Expr) -> Result<TypeExpr> {
         match &expr.kind {
-            ast::ExprKind::Char(_) | ast::ExprKind::String(_) => todo!(),
             ast::ExprKind::Unit => Ok(TypeExpr::Unit),
             ast::ExprKind::Bool(_) => Ok(TypeExpr::Bool),
+            ast::ExprKind::Char(_) => Ok(TypeExpr::Char),
             ast::ExprKind::Int(_) => Ok(TypeExpr::Int),
+            ast::ExprKind::String(_) => Ok(TypeExpr::String),
             ast::ExprKind::BoundVariable(index) => self.rule_var(expr.span, *index),
             ast::ExprKind::FreeVariable(name) => self.rule_free_var(expr.span, name.clone()),
             ast::ExprKind::Application(left, right) => self.rule_app(expr.span, left, right),
@@ -347,7 +357,6 @@ impl TypeChecker {
         let l_tp = self.algorithm_j(left)?;
         let r_tp = self.algorithm_j(right)?;
         match op {
-            ast::BinaryOp::Concat => todo!(),
             ast::BinaryOp::Add
             | ast::BinaryOp::Sub
             | ast::BinaryOp::Mul
@@ -362,6 +371,11 @@ impl TypeChecker {
                 self.unify(span, l_tp, TypeExpr::Int)?;
                 self.unify(span, r_tp, TypeExpr::Int)?;
                 Ok(TypeExpr::Bool)
+            }
+            ast::BinaryOp::Concat => {
+                self.unify(span, l_tp, TypeExpr::String)?;
+                self.unify(span, r_tp, TypeExpr::String)?;
+                Ok(TypeExpr::String)
             }
             ast::BinaryOp::And | ast::BinaryOp::Or => {
                 self.unify(span, l_tp, TypeExpr::Bool)?;
@@ -387,7 +401,9 @@ impl TypeChecker {
 
     fn require_equality(&mut self, span: ast::Span, tp: TypeExpr) -> Result<()> {
         match self.resolve(tp) {
-            TypeExpr::Unit | TypeExpr::Bool | TypeExpr::Int => Ok(()),
+            TypeExpr::Unit | TypeExpr::Bool | TypeExpr::Char | TypeExpr::Int | TypeExpr::String => {
+                Ok(())
+            }
             TypeExpr::UnifVar(id) => {
                 let idx = usize::try_from(id).unwrap();
                 self.eq[idx] = true;
@@ -406,7 +422,9 @@ impl TypeChecker {
         match (left, right) {
             (TypeExpr::Unit, TypeExpr::Unit)
             | (TypeExpr::Bool, TypeExpr::Bool)
-            | (TypeExpr::Int, TypeExpr::Int) => Ok(()),
+            | (TypeExpr::Char, TypeExpr::Char)
+            | (TypeExpr::Int, TypeExpr::Int)
+            | (TypeExpr::String, TypeExpr::String) => Ok(()),
             (TypeExpr::Arrow(ss, st), TypeExpr::Arrow(ts, tt)) => {
                 self.unify(span, (*ss).clone(), (*ts).clone())?;
                 self.unify(span, (*st).clone(), (*tt).clone())
@@ -504,7 +522,12 @@ impl TypeChecker {
                 Rc::new(self.instantiate_inner(src, fresh)),
                 Rc::new(self.instantiate_inner(tgt, fresh)),
             ),
-            TypeExpr::Unit | TypeExpr::Bool | TypeExpr::Int | TypeExpr::UnifVar(_) => tp.clone(),
+            TypeExpr::Unit
+            | TypeExpr::Bool
+            | TypeExpr::Char
+            | TypeExpr::Int
+            | TypeExpr::String
+            | TypeExpr::UnifVar(_) => tp.clone(),
         }
     }
 
@@ -557,13 +580,23 @@ impl TypeChecker {
                 self.lower_levels((*src).clone(), max_level);
                 self.lower_levels((*tgt).clone(), max_level);
             }
-            TypeExpr::Unit | TypeExpr::Bool | TypeExpr::Int | TypeExpr::Var(_, _) => {}
+            TypeExpr::Unit
+            | TypeExpr::Bool
+            | TypeExpr::Char
+            | TypeExpr::Int
+            | TypeExpr::String
+            | TypeExpr::Var(_, _) => {}
         }
     }
 
     fn occurs(&mut self, id: u32, tp: TypeExpr) -> bool {
         match self.resolve(tp) {
-            TypeExpr::Unit | TypeExpr::Bool | TypeExpr::Int | TypeExpr::Var(_, _) => false,
+            TypeExpr::Unit
+            | TypeExpr::Bool
+            | TypeExpr::Char
+            | TypeExpr::Int
+            | TypeExpr::String
+            | TypeExpr::Var(_, _) => false,
             TypeExpr::UnifVar(tp_id) => id == tp_id,
             TypeExpr::Arrow(src, tgt) => {
                 self.occurs(id, (*src).clone()) || self.occurs(id, (*tgt).clone())
@@ -604,7 +637,9 @@ mod tests {
         assert_eq!(check("1 < 2 && !false").unwrap(), "Bool");
         assert_eq!(check("() == ()").unwrap(), "Bool");
         assert_eq!(check("true == true").unwrap(), "Bool");
+        assert_eq!(check("'a' == 'a'").unwrap(), "Bool");
         assert_eq!(check("1 == 1").unwrap(), "Bool");
+        assert_eq!(check(r#""abc" == "abc""#).unwrap(), "Bool");
         assert_eq!(check("1 == (fun _ => 2) ()").unwrap(), "Bool");
         assert_eq!(check("1; true").unwrap(), "Bool");
         assert_eq!(check("fun x => x").unwrap(), "(∀α.α -> α)");

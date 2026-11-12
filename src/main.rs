@@ -194,6 +194,7 @@ fn result_kind(tp: &typecheck::TypeExpr) -> ResultKind {
         typecheck::TypeExpr::Unit => ResultKind::Unit,
         typecheck::TypeExpr::Arrow(..) => ResultKind::Function,
         typecheck::TypeExpr::Var(..) | typecheck::TypeExpr::UnifVar(_) => ResultKind::Never,
+        _ => todo!(),
     }
 }
 
