@@ -172,6 +172,10 @@ pub fn interpret(expr: &ast::Expr) -> Expr {
     cbv(spanless)
 }
 
+fn stuck_application(left: Expr, right: Expr) -> Expr {
+    Expr::Application(Box::new(left), Box::new(right))
+}
+
 fn cbv(expr: Expr) -> Expr {
     match expr {
         Expr::Application(left, right) => {
@@ -181,11 +185,19 @@ fn cbv(expr: Expr) -> Expr {
             let right_val = cbv(*right);
             match left_val {
                 Expr::Abstraction(body) => cbv(beta(*body, right_val)),
-                Expr::FreeVariable(n) if n == "print" => {
-                    println!("{right_val}");
-                    Expr::Unit
-                }
-                l => Expr::Application(Box::new(l), Box::new(right_val)),
+                Expr::FreeVariable(name) => match (name.as_str(), right_val) {
+                    ("print", Expr::String(s)) => {
+                        println!("{s}");
+                        Expr::Unit
+                    }
+                    ("len", Expr::String(s)) => Expr::Int(s.len().try_into().unwrap()),
+                    ("unitToStr", Expr::Unit) => Expr::String("()".to_string()),
+                    ("boolToStr", Expr::Bool(b)) => Expr::String(format!("{b}")),
+                    ("charToStr", Expr::Char(c)) => Expr::String(format!("'{c}'")),
+                    ("intToStr", Expr::Int(n)) => Expr::String(format!("{n}")),
+                    (_, r) => stuck_application(Expr::FreeVariable(name), r),
+                },
+                l => stuck_application(l, right_val),
             }
         }
         Expr::LetIn(is_rec, expr, body) => {
@@ -325,8 +337,25 @@ mod tests {
             .to_string(),
             "(λ.(if (< #0 2) then 1 else (* #0 ((let rec (λ.(if (< #0 2) then 1 else (* #0 (#1 (- #0 1))))) in #0) (- #0 1)))))"
         );
-        assert_eq!(interp("print 3; 4").to_string(), "4");
-        assert_eq!(interp("let p = print; p 1; p 2; 5").to_string(), "5");
-        assert_eq!(interp("(fun f => { f 6; 7 }) print").to_string(), "7");
+        // builtins
+        assert_eq!(interp("print ()").to_string(), "(print ())");
+        assert_eq!(interp("print 3").to_string(), "(print 3)");
+        assert_eq!(interp("print \"3\"").to_string(), "()");
+        assert_eq!(interp("print \"3\"; 4").to_string(), "4");
+        assert_eq!(
+            interp("let p = print; p \"one\"; p \"two\"; \"three\"").to_string(),
+            "\"three\""
+        );
+        assert_eq!(
+            interp("(fun f => { f \"debug\"; 7 }) print").to_string(),
+            "7"
+        );
+        assert_eq!(interp("len 'a'").to_string(), "(len 'a')");
+        assert_eq!(interp("len \"a\"").to_string(), "1");
+        assert_eq!(interp("len \"abcde\"").to_string(), "5");
+        assert_eq!(interp("unitToStr ()").to_string(), "\"()\"");
+        assert_eq!(interp("boolToStr true").to_string(), "\"true\"");
+        assert_eq!(interp("charToStr 'a'").to_string(), "\"'a'\"");
+        assert_eq!(interp("intToStr 123").to_string(), "\"123\"");
     }
 }
