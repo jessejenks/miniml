@@ -921,6 +921,7 @@ impl<'ctx> Compiler<'ctx> {
                 let r = self.unbox_int(r)?;
                 let b = &self.builder;
                 let result = match op {
+                    ast::BinaryOp::Concat => todo!(),
                     ast::BinaryOp::Add => b.build_int_add(l, r, "add")?,
                     ast::BinaryOp::Sub => b.build_int_sub(l, r, "sub")?,
                     ast::BinaryOp::Mul => b.build_int_mul(l, r, "mul")?,

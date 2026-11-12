@@ -7,6 +7,7 @@ pub fn surface_to_core(program: surface::Expr) -> ast::Expr {
 
 fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) -> ast::Expr {
     let kind = match expr.kind {
+        surface::ExprKind::Char(_) | surface::ExprKind::String(_) => todo!(),
         surface::ExprKind::Unit => ast::ExprKind::Unit,
         surface::ExprKind::Bool(b) => ast::ExprKind::Bool(b),
         surface::ExprKind::Int(n) => ast::ExprKind::Int(n),

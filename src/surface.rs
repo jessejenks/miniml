@@ -9,7 +9,9 @@ pub struct Identifier<'a> {
 pub enum ExprKind<'a> {
     Unit,
     Bool(bool),
+    Char(char),
     Int(i64),
+    String(&'a str),
     Variable(&'a str),
     Application(Box<Expr<'a>>, Box<Expr<'a>>),
     Abstraction(Vec<Identifier<'a>>, Box<Expr<'a>>),
@@ -25,7 +27,9 @@ impl Display for ExprKind<'_> {
         match self {
             ExprKind::Unit => write!(f, "()"),
             ExprKind::Bool(b) => write!(f, "{b}"),
+            ExprKind::Char(c) => write!(f, "'{c}'"),
             ExprKind::Int(n) => write!(f, "{n}"),
+            ExprKind::String(s) => write!(f, "\"{s}\""),
             ExprKind::Variable(x) => write!(f, "{x}"),
             ExprKind::Application(left, right) => write!(f, "({left} {right})"),
             ExprKind::Abstraction(xs, body) => {

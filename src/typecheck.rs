@@ -346,6 +346,7 @@ impl TypeChecker {
         let l_tp = self.algorithm_j(left)?;
         let r_tp = self.algorithm_j(right)?;
         match op {
+            ast::BinaryOp::Concat => todo!(),
             ast::BinaryOp::Add
             | ast::BinaryOp::Sub
             | ast::BinaryOp::Mul
