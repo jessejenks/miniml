@@ -47,6 +47,8 @@ static uint64_t *heap_capacity;
 static uint64_t *heap_end;
 static uint64_t *free_list;
 
+static uint8_t *object_starts; // bitset of where heap objects begin
+
 static struct { uint64_t **items; size_t len, cap; } mark_stack;
 
 #ifdef _MSC_VER
@@ -104,6 +106,10 @@ static int reserve_heap(void) {
     // round up to next word
     heap_capacity = (uint64_t *)(start + ((initial_heap + 7) & ~(size_t)7));
     heap_end = (uint64_t *)(start + HEAP_SIZE);
+    object_starts = calloc(HEAP_SIZE / 64, 1);
+    if (object_starts == NULL) {
+        return -1;
+    }
     return 0;
 }
 
@@ -175,6 +181,8 @@ void miniml_reset(void) {
     heap_capacity = NULL;
     heap_end = NULL;
     free_list = NULL;
+    free(object_starts);
+    object_starts = NULL;
     free(mark_stack.items);
     mark_stack.items = NULL;
     mark_stack.len = 0;
@@ -206,17 +214,42 @@ static uint8_t header_tag(uint64_t header) {
     return header & 255;
 }
 
+static uint8_t header_mark(uint64_t header) {
+    return (header & MARK_BIT) >> 8;
+}
+
+static uint8_t is_object_start(uint64_t *p) {
+    size_t i = p - heap_base;
+    uint8_t bit = (uint8_t)(1 << (i % 8));
+    size_t idx = i / 8;
+    return object_starts[idx] & bit;
+}
+
+static void record_object_start(uint64_t *p) {
+    size_t i = p - heap_base;
+    uint8_t bit = (uint8_t)(1 << (i % 8));
+    size_t idx = i / 8;
+    object_starts[idx] |= bit;
+}
+
 static int is_object(uint64_t w) {
-    return w != 0 && (w & 7) == 0
-        && w >= (uint64_t)heap_base && w < (uint64_t)heap_top;
+    return (w & 7) == 0
+        && w >= (uint64_t)heap_base && w < (uint64_t)heap_top
+        && is_object_start((uint64_t *)w);
 }
 
 static uint64_t *containing_object(uint64_t w) {
     if (w < (uint64_t)heap_base || w >= (uint64_t)heap_top) return NULL;
-    return (uint64_t *)(w & ~(uint64_t)15);
+    // nearest possible start address
+    uint64_t *start = (uint64_t *)(w & ~(uint64_t)7);
+    // find actual nearest object start
+    while (start > heap_base && !is_object_start(start)) start--;
+    if (start == heap_base) return NULL;
+    if ((uint64_t *)w >= start + header_size(start[-1])) return NULL;
+    return start;
 }
 
-static void __attribute((unused)) push_mark_stack(uint64_t *p) {
+static void push_mark_stack(uint64_t *p) {
     if (mark_stack.len == mark_stack.cap) {
         mark_stack.cap = mark_stack.cap == 0 ? 1024 : 2 * mark_stack.cap;
         mark_stack.items = realloc(mark_stack.items, mark_stack.cap * sizeof(uint64_t *));
@@ -233,12 +266,18 @@ static uint64_t *pop_mark_stack(void) {
 }
 
 static void mark(uint64_t *p) {
-    // TODO
-    (void)p;
+    if (header_mark(p[-1])) return;
+    p[-1] |= MARK_BIT;
+    live_bytes += (header_size(p[-1]) + 1) * sizeof(uint64_t);
+    push_mark_stack(p);
 }
 
 static void sweep(void) {
-    // TODO
+    uint64_t *p;
+    for (p = heap_base + 1; p - 1 < heap_top; p += header_size(p[-1]) + 1) {
+        p[-1] &= ~(uint64_t)MARK_BIT;
+    }
+    if (p - 1 != heap_top) abort();
 }
 
 static NOINLINE void collect(void) {
@@ -309,6 +348,8 @@ void *miniml_alloc(uint64_t words, uint64_t tag) {
         p = take_cell(words);
     }
     p[0] = header;
+    // record start from first field
+    record_object_start(p + 1);
     return p + 1;
 }
 
