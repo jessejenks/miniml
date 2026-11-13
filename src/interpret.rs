@@ -5,7 +5,9 @@ use std::fmt::Display;
 pub enum Expr {
     Unit,
     Bool(bool),
+    Char(char),
     Int(i64),
+    String(String),
     BoundVariable(i64),
     FreeVariable(String),
     Application(Box<Expr>, Box<Expr>),
@@ -21,7 +23,9 @@ impl Display for Expr {
         match self {
             Expr::Unit => write!(f, "()"),
             Expr::Bool(b) => write!(f, "{b}"),
+            Expr::Char(c) => write!(f, "'{c}'"),
             Expr::Int(n) => write!(f, "{n}"),
+            Expr::String(s) => write!(f, "\"{s}\""),
             Expr::FreeVariable(x) => write!(f, "{x}"),
             Expr::BoundVariable(i) => write!(f, "#{i}"),
             Expr::Application(left, right) => write!(f, "({left} {right})"),
@@ -44,7 +48,9 @@ fn to_spanless(expr: &ast::Expr) -> Expr {
     match &expr.kind {
         ast::ExprKind::Unit => Expr::Unit,
         ast::ExprKind::Bool(b) => Expr::Bool(*b),
+        ast::ExprKind::Char(c) => Expr::Char(*c),
         ast::ExprKind::Int(n) => Expr::Int(*n),
+        ast::ExprKind::String(s) => Expr::String(s.clone()),
         ast::ExprKind::BoundVariable(i) => Expr::BoundVariable(*i),
         ast::ExprKind::FreeVariable(x) => Expr::FreeVariable(x.clone()),
         ast::ExprKind::Application(left, right) => {
@@ -72,7 +78,12 @@ fn to_spanless(expr: &ast::Expr) -> Expr {
 
 fn shift(i: i64, c: i64, expr: Expr) -> Expr {
     match expr {
-        Expr::Unit | Expr::Bool(_) | Expr::Int(_) | Expr::FreeVariable(_) => expr,
+        Expr::Unit
+        | Expr::Bool(_)
+        | Expr::Char(_)
+        | Expr::Int(_)
+        | Expr::String(_)
+        | Expr::FreeVariable(_) => expr,
         Expr::BoundVariable(index) => {
             if index < c {
                 expr
@@ -105,7 +116,12 @@ fn shift(i: i64, c: i64, expr: Expr) -> Expr {
 
 fn substitute(t: Expr, n: i64, expr: Expr) -> Expr {
     match t {
-        Expr::Unit | Expr::Bool(_) | Expr::Int(_) | Expr::FreeVariable(_) => t,
+        Expr::Unit
+        | Expr::Bool(_)
+        | Expr::Char(_)
+        | Expr::Int(_)
+        | Expr::String(_)
+        | Expr::FreeVariable(_) => t,
         Expr::BoundVariable(index) => {
             if index == n {
                 expr
@@ -156,6 +172,10 @@ pub fn interpret(expr: &ast::Expr) -> Expr {
     cbv(spanless)
 }
 
+fn stuck_application(left: Expr, right: Expr) -> Expr {
+    Expr::Application(Box::new(left), Box::new(right))
+}
+
 fn cbv(expr: Expr) -> Expr {
     match expr {
         Expr::Application(left, right) => {
@@ -165,11 +185,19 @@ fn cbv(expr: Expr) -> Expr {
             let right_val = cbv(*right);
             match left_val {
                 Expr::Abstraction(body) => cbv(beta(*body, right_val)),
-                Expr::FreeVariable(n) if n == "print" => {
-                    println!("{right_val}");
-                    Expr::Unit
-                }
-                l => Expr::Application(Box::new(l), Box::new(right_val)),
+                Expr::FreeVariable(name) => match (name.as_str(), right_val) {
+                    ("print", Expr::String(s)) => {
+                        println!("{s}");
+                        Expr::Unit
+                    }
+                    ("len", Expr::String(s)) => Expr::Int(s.len().try_into().unwrap()),
+                    ("unitToStr", Expr::Unit) => Expr::String("()".to_string()),
+                    ("boolToStr", Expr::Bool(b)) => Expr::String(format!("{b}")),
+                    ("charToStr", Expr::Char(c)) => Expr::String(format!("'{c}'")),
+                    ("intToStr", Expr::Int(n)) => Expr::String(format!("{n}")),
+                    (_, r) => stuck_application(Expr::FreeVariable(name), r),
+                },
+                l => stuck_application(l, right_val),
             }
         }
         Expr::LetIn(is_rec, expr, body) => {
@@ -231,7 +259,10 @@ fn cbv(expr: Expr) -> Expr {
                 (ast::BinaryOp::Gte, Expr::Int(a), Expr::Int(b)) => Expr::Bool(a >= b),
                 (ast::BinaryOp::Eq, Expr::Unit, Expr::Unit) => Expr::Bool(true),
                 (ast::BinaryOp::Eq, Expr::Bool(a), Expr::Bool(b)) => Expr::Bool(a == b),
+                (ast::BinaryOp::Eq, Expr::Char(a), Expr::Char(b)) => Expr::Bool(a == b),
                 (ast::BinaryOp::Eq, Expr::Int(a), Expr::Int(b)) => Expr::Bool(a == b),
+                (ast::BinaryOp::Eq, Expr::String(a), Expr::String(b)) => Expr::Bool(a == b),
+                (ast::BinaryOp::Concat, Expr::String(a), Expr::String(b)) => Expr::String(a + &b),
                 (ast::BinaryOp::BitAnd, Expr::Int(a), Expr::Int(b)) => Expr::Int(a & b),
                 (ast::BinaryOp::BitOr, Expr::Int(a), Expr::Int(b)) => Expr::Int(a | b),
                 (ast::BinaryOp::And, Expr::Bool(a), Expr::Bool(b)) => Expr::Bool(a && b),
@@ -259,6 +290,12 @@ mod tests {
         assert_eq!(interp("true").to_string(), "true");
         assert_eq!(interp("false").to_string(), "false");
         assert_eq!(interp("1").to_string(), "1");
+        assert_eq!(interp("1 == 1").to_string(), "true");
+        assert_eq!(interp("'a' == 'a'").to_string(), "true");
+        assert_eq!(interp("'a' == 'b'").to_string(), "false");
+        assert_eq!(interp(r#""abc" == "abc""#).to_string(), "true");
+        assert_eq!(interp(r#""abc" == "bcd""#).to_string(), "false");
+        assert_eq!(interp(r#""a" ++ "b""#).to_string(), r#""ab""#);
         assert_eq!(interp("fun x => x").to_string(), "(λ.#0)");
         assert_eq!(interp("fun x => fun x => x").to_string(), "(λ.(λ.#0))");
         assert_eq!(interp("(fun _ => b) a").to_string(), "b");
@@ -300,8 +337,25 @@ mod tests {
             .to_string(),
             "(λ.(if (< #0 2) then 1 else (* #0 ((let rec (λ.(if (< #0 2) then 1 else (* #0 (#1 (- #0 1))))) in #0) (- #0 1)))))"
         );
-        assert_eq!(interp("print 3; 4").to_string(), "4");
-        assert_eq!(interp("let p = print; p 1; p 2; 5").to_string(), "5");
-        assert_eq!(interp("(fun f => { f 6; 7 }) print").to_string(), "7");
+        // builtins
+        assert_eq!(interp("print ()").to_string(), "(print ())");
+        assert_eq!(interp("print 3").to_string(), "(print 3)");
+        assert_eq!(interp("print \"3\"").to_string(), "()");
+        assert_eq!(interp("print \"3\"; 4").to_string(), "4");
+        assert_eq!(
+            interp("let p = print; p \"one\"; p \"two\"; \"three\"").to_string(),
+            "\"three\""
+        );
+        assert_eq!(
+            interp("(fun f => { f \"debug\"; 7 }) print").to_string(),
+            "7"
+        );
+        assert_eq!(interp("len 'a'").to_string(), "(len 'a')");
+        assert_eq!(interp("len \"a\"").to_string(), "1");
+        assert_eq!(interp("len \"abcde\"").to_string(), "5");
+        assert_eq!(interp("unitToStr ()").to_string(), "\"()\"");
+        assert_eq!(interp("boolToStr true").to_string(), "\"true\"");
+        assert_eq!(interp("charToStr 'a'").to_string(), "\"'a'\"");
+        assert_eq!(interp("intToStr 123").to_string(), "\"123\"");
     }
 }

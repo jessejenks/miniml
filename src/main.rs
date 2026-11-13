@@ -99,13 +99,7 @@ fn main() -> miette::Result<()> {
     }
 
     let mut type_checker = TypeChecker::new();
-    type_checker.set_env(
-        "print".to_string(),
-        typecheck::Scheme::as_monotype(typecheck::TypeExpr::arrow(
-            typecheck::TypeExpr::Int,
-            typecheck::TypeExpr::Unit,
-        )),
-    );
+    add_builtins(&mut type_checker);
     let type_check_result = type_checker.infer(&elaborated_program);
     let (result_kind, result_label) = match type_check_result {
         Err(e) => {
@@ -194,6 +188,7 @@ fn result_kind(tp: &typecheck::TypeExpr) -> ResultKind {
         typecheck::TypeExpr::Unit => ResultKind::Unit,
         typecheck::TypeExpr::Arrow(..) => ResultKind::Function,
         typecheck::TypeExpr::Var(..) | typecheck::TypeExpr::UnifVar(_) => ResultKind::Never,
+        _ => todo!(),
     }
 }
 
@@ -204,6 +199,51 @@ fn default_output(input: &Path) -> PathBuf {
     } else {
         stem
     }
+}
+
+fn add_builtins(type_checker: &mut typecheck::TypeChecker) {
+    type_checker.set_env(
+        "print".to_string(),
+        typecheck::Scheme::as_monotype(typecheck::TypeExpr::arrow(
+            typecheck::TypeExpr::String,
+            typecheck::TypeExpr::Unit,
+        )),
+    );
+    type_checker.set_env(
+        "len".to_string(),
+        typecheck::Scheme::as_monotype(typecheck::TypeExpr::arrow(
+            typecheck::TypeExpr::String,
+            typecheck::TypeExpr::Int,
+        )),
+    );
+    type_checker.set_env(
+        "unitToStr".to_string(),
+        typecheck::Scheme::as_monotype(typecheck::TypeExpr::arrow(
+            typecheck::TypeExpr::Unit,
+            typecheck::TypeExpr::String,
+        )),
+    );
+    type_checker.set_env(
+        "boolToStr".to_string(),
+        typecheck::Scheme::as_monotype(typecheck::TypeExpr::arrow(
+            typecheck::TypeExpr::Bool,
+            typecheck::TypeExpr::String,
+        )),
+    );
+    type_checker.set_env(
+        "charToStr".to_string(),
+        typecheck::Scheme::as_monotype(typecheck::TypeExpr::arrow(
+            typecheck::TypeExpr::Char,
+            typecheck::TypeExpr::String,
+        )),
+    );
+    type_checker.set_env(
+        "intToStr".to_string(),
+        typecheck::Scheme::as_monotype(typecheck::TypeExpr::arrow(
+            typecheck::TypeExpr::Int,
+            typecheck::TypeExpr::String,
+        )),
+    );
 }
 
 fn report<E: Diagnostic + Send + Sync + 'static>(e: E, path: &str, source: &str) -> Report {

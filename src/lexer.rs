@@ -17,6 +17,18 @@ pub enum LexError {
         #[label("doesn't fit in 32 bits")]
         span: SourceSpan,
     },
+    #[error("not a character")]
+    #[diagnostic(code(lexer::not_a_character))]
+    NotACharacter {
+        #[label("single quotes denote a character")]
+        span: SourceSpan,
+    },
+    #[error("unterminated string")]
+    #[diagnostic(code(lexer::unterminated_string))]
+    UnterminatedString {
+        #[label("no closing quote found for string")]
+        span: SourceSpan,
+    },
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -70,6 +82,7 @@ pub enum Token<'a> {
     Bang,
     Tilde,
     Plus,
+    PlusPlus,
     Dash,
     Star,
     Slash,
@@ -88,7 +101,9 @@ pub enum Token<'a> {
     WideArrow,
     Unit,
     Bool(bool),
+    Char(char), // utf-8 code point
     Int(i64),
+    String(&'a str),
     Identifier(&'a str),
     Keyword(Keyword),
 }
@@ -166,7 +181,14 @@ impl<'a> Iterator for Lexer<'a> {
             ';' => Token::Semi,
             '!' => Token::Bang,
             '~' => Token::Tilde,
-            '+' => Token::Plus,
+            '+' => {
+                if self.peek_char() == Some('+') {
+                    self.chars.next();
+                    Token::PlusPlus
+                } else {
+                    Token::Plus
+                }
+            }
             '-' => Token::Dash,
             '*' => Token::Star,
             '/' => Token::Slash,
@@ -236,6 +258,56 @@ impl<'a> Iterator for Lexer<'a> {
                         }));
                     }
                 }
+            }
+            '\'' => {
+                let c = match self.chars.next() {
+                    Some((_, '\\')) => match self.chars.next() {
+                        Some((_, 'n')) => '\n',
+                        Some((_, 'r')) => '\r',
+                        Some((_, 't')) => '\t',
+                        Some((_, '0')) => '\0',
+                        Some((_, '\\')) => '\\',
+                        Some((_, '\'')) => '\'',
+                        _ => {
+                            return Some(Err(LexError::NotACharacter {
+                                span: (start..self.chars.offset()).into(),
+                            }));
+                        }
+                    },
+                    Some((_, '\'')) | None => {
+                        return Some(Err(LexError::NotACharacter {
+                            span: (start..self.chars.offset()).into(),
+                        }));
+                    }
+                    Some((_, c)) => c,
+                };
+                if !matches!(self.chars.next(), Some((_, '\''))) {
+                    return Some(Err(LexError::NotACharacter {
+                        span: (start..self.chars.offset()).into(),
+                    }));
+                }
+                Token::Char(c)
+            }
+            '"' => {
+                loop {
+                    match self.chars.next() {
+                        Some((_, '\\')) => {
+                            self.chars.next();
+                        }
+                        Some((_, '"')) => {
+                            break;
+                        }
+                        Some(_) => {}
+                        _ => {
+                            return Some(Err(LexError::UnterminatedString {
+                                span: (start..self.chars.offset()).into(),
+                            }));
+                        }
+                    }
+                }
+                let end = self.chars.offset();
+                let value = &self.source[(start + 1)..(end - 1)];
+                Token::String(value)
             }
             _ if Self::is_identifier_start(ch) => {
                 self.chomp_while(Self::is_identifier_rest);
@@ -313,5 +385,21 @@ mod tests {
                 Token::Int(3),
             ]
         );
+    }
+
+    #[test]
+    fn lexes_chars_and_strings() {
+        assert_eq!(
+            tokens(r"'a' '\n' '\''"),
+            vec![Token::Char('a'), Token::Char('\n'), Token::Char('\'')]
+        );
+        assert_eq!(
+            tokens(r#""" "a\"b""#),
+            vec![Token::String(""), Token::String(r#"a\"b"#)]
+        );
+        assert!(matches!(
+            Lexer::new("''").next(),
+            Some(Err(LexError::NotACharacter { .. }))
+        ));
     }
 }

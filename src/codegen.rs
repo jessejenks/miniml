@@ -93,9 +93,12 @@ impl<'ctx> Compiler<'ctx> {
         let word = context.i64_type();
         let ptr_type = context.ptr_type(AddressSpace::default());
 
+        // second param should be i8, but ABI could potentially fill with extra data
+        // so passing full word is slightly easier, but also slightly misleading
+        // declare ptr @miniml_alloc(i64, i64)
         let miniml_alloc = module.add_function(
             "miniml_alloc",
-            ptr_type.fn_type(&[word.into()], false),
+            ptr_type.fn_type(&[word.into(), word.into()], false),
             None,
         );
         // declare i32 @printf(ptr, ...)
@@ -173,10 +176,16 @@ impl<'ctx> Compiler<'ctx> {
         head.set_name("head");
         tail.set_name("tail");
 
-        let list_size = self.list_type.size_of().expect("list type has body");
         let cell = self
             .builder
-            .build_direct_call(self.miniml_alloc, &[list_size.into()], "cell")?
+            .build_direct_call(
+                self.miniml_alloc,
+                &[
+                    self.word.const_int(2, false).into(),
+                    self.word.const_int(248, false).into(),
+                ],
+                "cell",
+            )? // 0 = env tag
             .try_as_basic_value()
             .expect_basic("malloc returns a value")
             .into_pointer_value();
@@ -207,10 +216,16 @@ impl<'ctx> Compiler<'ctx> {
         code.set_name("code");
         env.set_name("env");
 
-        let size = self.closure_type.size_of().expect("closure type has body");
         let closure = self
             .builder
-            .build_direct_call(self.miniml_alloc, &[size.into()], "closure")?
+            .build_direct_call(
+                self.miniml_alloc,
+                &[
+                    self.word.const_int(2, false).into(),
+                    self.word.const_int(247, false).into(),
+                ],
+                "closure",
+            )? // closure tag
             .try_as_basic_value()
             .expect_basic("malloc returns a value")
             .into_pointer_value();
@@ -785,7 +800,9 @@ impl<'ctx> Compiler<'ctx> {
         match &expr.kind {
             ast::ExprKind::Unit
             | ast::ExprKind::Bool(_)
+            | ast::ExprKind::Char(_)
             | ast::ExprKind::Int(_)
+            | ast::ExprKind::String(_)
             | ast::ExprKind::Unary(..)
             | ast::ExprKind::Binary(..) => self.compile_primitive(expr),
             ast::ExprKind::BoundVariable(n) => self.access(*n),
@@ -845,7 +862,9 @@ impl<'ctx> Compiler<'ctx> {
         match &expr.kind {
             ast::ExprKind::Unit
             | ast::ExprKind::Bool(_)
+            | ast::ExprKind::Char(_)
             | ast::ExprKind::Int(_)
+            | ast::ExprKind::String(_)
             | ast::ExprKind::Unary(..)
             | ast::ExprKind::Binary(..)
             | ast::ExprKind::BoundVariable(_)
@@ -896,6 +915,7 @@ impl<'ctx> Compiler<'ctx> {
 
     fn compile_primitive(&mut self, expr: &ast::Expr) -> Result<IntValue<'ctx>> {
         match &expr.kind {
+            ast::ExprKind::Char(_) | ast::ExprKind::String(_) => todo!(),
             ast::ExprKind::Unit => self.box_const(0),
             ast::ExprKind::Bool(b) => self.box_const(i64::from(*b)),
             ast::ExprKind::Int(n) => self.box_const(*n),
@@ -921,6 +941,7 @@ impl<'ctx> Compiler<'ctx> {
                 let r = self.unbox_int(r)?;
                 let b = &self.builder;
                 let result = match op {
+                    ast::BinaryOp::Concat => todo!(),
                     ast::BinaryOp::Add => b.build_int_add(l, r, "add")?,
                     ast::BinaryOp::Sub => b.build_int_sub(l, r, "sub")?,
                     ast::BinaryOp::Mul => b.build_int_mul(l, r, "mul")?,
@@ -1006,7 +1027,7 @@ mod tests {
         static mut miniml_args: *mut u64;
         fn miniml_run(entry: unsafe extern "C" fn() -> i64) -> i64;
         fn miniml_reset();
-        fn miniml_alloc(size: usize) -> *mut u8;
+        fn miniml_alloc(words: u64, tag: u64) -> *mut u8;
     }
 
     static RUNTIME_LOCK: Mutex<()> = Mutex::new(());

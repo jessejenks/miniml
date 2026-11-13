@@ -51,13 +51,14 @@ pub enum ParseError {
     },
 }
 
-const PREFIX_RBP: u8 = 9;
-const APPLICATION_LBP: u8 = 11;
-const APPLICATION_RBP: u8 = 12;
+const PREFIX_RBP: u8 = 11;
+const APPLICATION_LBP: u8 = 13;
+const APPLICATION_RBP: u8 = 14;
 
 fn token_to_binary_op(tok: &Token) -> Option<BinaryOp> {
     match tok {
         Token::Plus => Some(BinaryOp::Add),
+        Token::PlusPlus => Some(BinaryOp::Concat),
         Token::Dash => Some(BinaryOp::Sub),
         Token::Star => Some(BinaryOp::Mul),
         Token::Slash => Some(BinaryOp::Div),
@@ -257,7 +258,9 @@ impl<'a> Parser<'a> {
             tok,
             Token::Unit
                 | Token::Bool(_)
+                | Token::Char(_)
                 | Token::Int(_)
+                | Token::String(_)
                 | Token::Identifier(_)
                 | Token::Keyword(Keyword::Fun | Keyword::Let | Keyword::If)
                 | Token::Bang
@@ -276,7 +279,9 @@ impl<'a> Parser<'a> {
         match tok {
             Token::Unit => Ok(surface::Expr::new(surface::ExprKind::Unit, start, end)),
             Token::Bool(b) => Ok(surface::Expr::new(surface::ExprKind::Bool(b), start, end)),
+            Token::Char(c) => Ok(surface::Expr::new(surface::ExprKind::Char(c), start, end)),
             Token::Int(n) => Ok(surface::Expr::new(surface::ExprKind::Int(n), start, end)),
+            Token::String(s) => Ok(surface::Expr::new(surface::ExprKind::String(s), start, end)),
             Token::Identifier(x) => Ok(surface::Expr::new(
                 surface::ExprKind::Variable(x),
                 start,
@@ -386,8 +391,9 @@ impl<'a> Parser<'a> {
             BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Lte | BinaryOp::Gte | BinaryOp::Eq => {
                 (5, 6, false)
             }
-            BinaryOp::Add | BinaryOp::Sub | BinaryOp::BitOr => (7, 8, true),
-            BinaryOp::Mul | BinaryOp::Div | BinaryOp::BitAnd => (9, 10, true),
+            BinaryOp::Concat => (8, 7, true),
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::BitOr => (9, 10, true),
+            BinaryOp::Mul | BinaryOp::Div | BinaryOp::BitAnd => (11, 12, true),
         }
     }
 
@@ -432,6 +438,11 @@ mod tests {
             parse("x'''").kind,
             surface::ExprKind::Variable("x'''")
         ));
+        assert!(matches!(parse("'a'").kind, surface::ExprKind::Char('a')));
+        assert!(matches!(
+            parse(r#""hi""#).kind,
+            surface::ExprKind::String("hi")
+        ));
     }
 
     #[test]
@@ -440,6 +451,10 @@ mod tests {
         assert_eq!(parse("{}").to_string(), "()");
         assert_eq!(parse("{ a; }").to_string(), "(a; ())");
         assert_eq!(parse("a; b;").to_string(), "(a; (b; ()))");
+        assert_eq!(
+            parse("a ++ b ++ c == d").to_string(),
+            "((a ++ (b ++ c)) == d)"
+        );
         assert_eq!(parse("fun x => x").to_string(), "(fun x => x)");
         assert_eq!(parse("let x = x; x").to_string(), "(let x = x; x)");
         assert_eq!(parse("let rec x = x; x").to_string(), "(let rec x = x; x)");
