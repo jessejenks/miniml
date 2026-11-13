@@ -352,8 +352,31 @@ static NOINLINE void collect(void) {
 }
 
 static uint64_t *take_cell(uint64_t words) {
-    // TODO
     // Find first free slot with `words + 1` many words available
+    if (free_list != NULL) {
+        uint64_t *curr = free_list;
+        uint64_t *prev = NULL;
+        uint64_t size;
+        while (curr != NULL) {
+            size = header_size(curr[-1]);
+            if (size == words) {
+                // replace free region and update free list
+                if (prev == NULL) free_list = (uint64_t *)curr[0];
+                else prev[0] = curr[0];
+                return curr - 1;
+            }
+            if (size > words + 1) {
+                // split region
+                // +1 so that we have room for 1 field and new header
+                // update size
+                curr[-1] = ((size - words - 1) << 10) | FREE_TAG;
+                // take from tail so that we can keep free list pointer accurate
+                return curr + (size - words - 1);
+            }
+            prev = curr;
+            curr = (uint64_t *)curr[0];
+        }
+    }
     if (heap_top + 1 + words <= heap_capacity) {
         uint64_t *p = heap_top;
         heap_top += 1 + words;
