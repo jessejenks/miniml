@@ -232,6 +232,13 @@ static void record_object_start(uint64_t *p) {
     object_starts[idx] |= bit;
 }
 
+static void clear_object_start(uint64_t *p) {
+    size_t i = p - heap_base;
+    uint8_t bit = (uint8_t)(1 << (i % 8));
+    size_t idx = i / 8;
+    object_starts[idx] &= ~bit;
+}
+
 static int is_object(uint64_t w) {
     return (w & 7) == 0
         && w >= (uint64_t)heap_base && w < (uint64_t)heap_top
@@ -273,11 +280,39 @@ static void mark(uint64_t *p) {
 }
 
 static void sweep(void) {
-    uint64_t *p;
-    for (p = heap_base + 1; p - 1 < heap_top; p += header_size(p[-1]) + 1) {
-        p[-1] &= ~(uint64_t)MARK_BIT;
+    uint64_t *new_free_list = NULL;
+    uint64_t *tail = NULL;
+    uint64_t *p = heap_base + 1;
+    uint64_t run_length = 0;
+    uint64_t *run_start = p;
+    while (p - 1 < heap_top) {
+        uint8_t is_marked = header_mark(p[-1]);
+        uint8_t is_free = header_tag(p[-1]) == FREE_TAG;
+        uint64_t size = header_size(p[-1]);
+        if (is_free || !is_marked) {
+            clear_object_start(p);
+            if (run_length == 0) run_start = p;
+            run_length += size + 1;
+        } else {
+            if (run_length > 0) {
+                run_start[-1] = ((run_length - 1) << 10) | FREE_TAG;
+                run_start[0] = 0;
+                if (tail != NULL) tail[0] = (uint64_t)run_start;
+                else new_free_list = run_start;
+                tail = run_start;
+                run_length = 0;
+            }
+            p[-1] &= ~(uint64_t)MARK_BIT;
+        }
+        p += size + 1;
     }
-    if (p - 1 != heap_top) abort();
+    if (run_length > 0) {
+        run_start[-1] = ((run_length - 1) << 10) | FREE_TAG;
+        run_start[0] = 0;
+        if (tail != NULL) tail[0] = (uint64_t)run_start;
+        else new_free_list = run_start;
+    }
+    free_list = new_free_list;
 }
 
 static NOINLINE void collect(void) {
