@@ -24,9 +24,15 @@ static size_t guard_size;
 
 #define ARG_STACK_SIZE ((1 << 20) * sizeof(uint64_t))
 #define HEAP_SIZE (1 << 30)
-#define CELL_SIZE 16
 #define DEFAULT_INITIAL_HEAP (1 << 20)
-#define POISON 0xD15EA5EDDEADBEEFull
+
+// header constants
+#define MARK_BIT 0x100
+#define CLOSURE_TAG 247
+#define ENV_TAG 248
+#define NO_SCAN_TAG 251
+#define STRING_TAG 252
+#define FREE_TAG 255
 
 static size_t initial_heap = DEFAULT_INITIAL_HEAP;
 static int gc_stress;
@@ -35,14 +41,12 @@ uint64_t *miniml_args;
 static uint64_t *args_base;
 static uint64_t *stack_base;
 
-static char *heap_base;
-static char *heap_top;
-static char *heap_capacity;
-static char *heap_end;
+static uint64_t *heap_base;
+static uint64_t *heap_top;
+static uint64_t *heap_capacity;
+static uint64_t *heap_end;
 static uint64_t *free_list;
 
-static uint8_t *mark_bits; // bitset of marked cells
-static unsigned long long marked_cell_count;
 static struct { uint64_t **items; size_t len, cap; } mark_stack;
 
 #ifdef _MSC_VER
@@ -53,7 +57,7 @@ static struct { uint64_t **items; size_t len, cap; } mark_stack;
 
 static void print_stats(void) {
     fprintf(stderr, "allocations: %llu\nallocated bytes: %llu\n", allocations, allocated_bytes);
-    fprintf(stderr, "peak heap: %llu\n", (unsigned long long)(heap_top - heap_base));
+    fprintf(stderr, "peak heap: %llu\n", (unsigned long long)((heap_top - heap_base) * sizeof(uint64_t)));
     fprintf(stderr, "collections: %llu\n", collections);
     fprintf(stderr, "max live bytes: %llu\nfinal live bytes: %llu\n", max_live_bytes, live_bytes);
     fprintf(stderr, "gc seconds: %.3f\n", gc_seconds);
@@ -95,10 +99,11 @@ static int reserve_heap(void) {
     char* start = (char*)mmap(NULL, HEAP_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE, -1, 0);
     if (start == MAP_FAILED) return -1;
 #endif
-    heap_base = start;
-    heap_top = start;
-    heap_capacity = start + initial_heap;
-    heap_end = start + HEAP_SIZE;
+    heap_base = (uint64_t *)start;
+    heap_top = heap_base;
+    // round up to next word
+    heap_capacity = (uint64_t *)(start + ((initial_heap + 7) & ~(size_t)7));
+    heap_end = (uint64_t *)(start + HEAP_SIZE);
     return 0;
 }
 
@@ -108,12 +113,11 @@ static int grow_heap(void) {
     size_t grow_size = heap_capacity - heap_base;
     if (grow_size > (size_t)(heap_end - heap_capacity)) grow_size = heap_end - heap_capacity;
 #ifdef _WIN32
-    if (VirtualAlloc(heap_capacity, grow_size, MEM_COMMIT, PAGE_READWRITE) == NULL) return -1;
+    if (VirtualAlloc(heap_capacity, grow_size * sizeof(uint64_t), MEM_COMMIT, PAGE_READWRITE) == NULL) return -1;
 #endif
     heap_capacity += grow_size;
     return 0;
 }
-
 
 void miniml_init(void) {
     const char *initial = getenv("MINIML_INITIAL_HEAP");
@@ -144,12 +148,6 @@ void miniml_init(void) {
         exit(1);
     }
 
-    mark_bits = calloc(HEAP_SIZE / CELL_SIZE / 8, 1);
-    if (mark_bits == NULL) {
-        fputs("miniml: could not allocate mark bits\n", stderr);
-        exit(1);
-    }
-
     const char *stats = getenv("MINIML_STATS");
     if (stats != NULL && stats[0] != '\0' && stats[0] != '0') {
         atexit(print_stats);
@@ -177,8 +175,6 @@ void miniml_reset(void) {
     heap_capacity = NULL;
     heap_end = NULL;
     free_list = NULL;
-    free(mark_bits);
-    mark_bits = NULL;
     free(mark_stack.items);
     mark_stack.items = NULL;
     mark_stack.len = 0;
@@ -202,17 +198,25 @@ void miniml_set_gc_stress(int on) {
 }
 #endif
 
-static int is_cell(uint64_t w) {
-    return w != 0 && (w & 15) == 0
+static uint64_t header_size(uint64_t header) {
+    return header >> 10;
+}
+
+static uint8_t header_tag(uint64_t header) {
+    return header & 255;
+}
+
+static int is_object(uint64_t w) {
+    return w != 0 && (w & 7) == 0
         && w >= (uint64_t)heap_base && w < (uint64_t)heap_top;
 }
 
-static uint64_t *containing_cell(uint64_t w) {
+static uint64_t *containing_object(uint64_t w) {
     if (w < (uint64_t)heap_base || w >= (uint64_t)heap_top) return NULL;
     return (uint64_t *)(w & ~(uint64_t)15);
 }
 
-static void push_mark_stack(uint64_t *c) {
+static void __attribute((unused)) push_mark_stack(uint64_t *p) {
     if (mark_stack.len == mark_stack.cap) {
         mark_stack.cap = mark_stack.cap == 0 ? 1024 : 2 * mark_stack.cap;
         mark_stack.items = realloc(mark_stack.items, mark_stack.cap * sizeof(uint64_t *));
@@ -221,38 +225,20 @@ static void push_mark_stack(uint64_t *c) {
             exit(1);
         }
     }
-    mark_stack.items[mark_stack.len++] = c;
+    mark_stack.items[mark_stack.len++] = p;
 }
 
 static uint64_t *pop_mark_stack(void) {
     return mark_stack.items[--mark_stack.len];
 }
 
-static void mark_cell(uint64_t *c) {
-    size_t i = ((char *)c - heap_base) / CELL_SIZE;
-    uint8_t bit = (uint8_t)(1 << (i % 8));
-    size_t idx = i / 8;
-    if (mark_bits[idx] & bit) return;
-    mark_bits[idx] |= bit;
-    marked_cell_count++;
-    push_mark_stack(c);
+static void mark(uint64_t *p) {
+    // TODO
+    (void)p;
 }
 
 static void sweep(void) {
-    uint64_t *new_free_list = NULL;
-    size_t cells = (heap_top - heap_base) / CELL_SIZE;
-    // we sweep from highest address so that final free list starts at the lowest address
-    for (size_t i = cells; i-- > 0;) {
-        if (mark_bits[i / 8] & (1 << (i % 8))) continue;
-        uint64_t *c = (uint64_t *)(heap_base + i * CELL_SIZE);
-        // replace freed with [ ptr | 1 ][ poison ]
-        // poison value is chosen to be odd so is_cell returns false
-        // addresses are 16 byte aligned, so last 4 bits of c[0] are always 0001. See take_cell
-        c[0] = (uint64_t)new_free_list | 1;
-        c[1] = POISON;
-        new_free_list = c;
-    }
-    free_list = new_free_list;
+    // TODO
 }
 
 static NOINLINE void collect(void) {
@@ -265,72 +251,65 @@ static NOINLINE void collect(void) {
     // because -02 can change order of things depending on platform/version
     setjmp(regs.buf);
 
-    marked_cell_count = 0;
+    live_bytes = 0;
     for (uint64_t *w = (uint64_t *)&regs; w < stack_base; w++) {
-        uint64_t *c = containing_cell(*w);
-        if (c) mark_cell(c);
+        uint64_t *p = containing_object(*w);
+        if (p) mark(p);
     }
     for (uint64_t *w = args_base; w < miniml_args; w++) {
-        if (is_cell(*w)) mark_cell((uint64_t *)*w);
+        if (is_object(*w)) mark((uint64_t *)*w);
     }
     while (mark_stack.len > 0) {
-        uint64_t *c = pop_mark_stack();
-        if (is_cell(c[0])) mark_cell((uint64_t *)c[0]);
-        if (is_cell(c[1])) mark_cell((uint64_t *)c[1]);
+        uint64_t *p = pop_mark_stack();
+        if (header_tag(p[-1]) < NO_SCAN_TAG) {
+            for (uint64_t i = 0; i < header_size(p[-1]); i++) {
+                if (is_object(p[i])) mark((uint64_t *)p[i]);
+            }
+        }
     }
 
-    live_bytes = marked_cell_count * CELL_SIZE;
     if (live_bytes > max_live_bytes) max_live_bytes = live_bytes;
     sweep();
     // if we've used more than half of remaining capacity, double heap size.
     // note: an error from grow_heap is ignored and caught later in miniml_alloc
-    if (live_bytes > (unsigned long long)(heap_capacity - heap_base) / 2) grow_heap();
-    // num bits to set = ceil(heap size in bytes / 8)
-    memset(mark_bits, 0, ((heap_top - heap_base) / CELL_SIZE + 7) / 8);
+    if (live_bytes > (unsigned long long)(heap_capacity - heap_base) * sizeof(uint64_t) / 2) grow_heap();
     collections++;
     gc_seconds += (double)(clock() - start) / CLOCKS_PER_SEC;
 }
 
-static void *take_cell(void) {
-    if (free_list != NULL) {
-        // pop from free list, if non-empty
-        uint64_t *c = free_list;
-        free_list = (uint64_t *)(c[0] & ~(uint64_t)1);
-        return c;
-    }
-    if (heap_top + CELL_SIZE <= heap_capacity) {
-        // otherwise take from existing heap capacity
-        void *p = heap_top;
-        heap_top += CELL_SIZE;
+static uint64_t *take_cell(uint64_t words) {
+    // TODO
+    // Find first free slot with `words + 1` many words available
+    if (heap_top + 1 + words <= heap_capacity) {
+        uint64_t *p = heap_top;
+        heap_top += 1 + words;
         return p;
     }
     return NULL;
 }
 
-void *miniml_alloc(size_t size) {
+void *miniml_alloc(uint64_t words, uint64_t tag) {
     allocations++;
-    allocated_bytes += size;
+    allocated_bytes += (1 + words) * sizeof(uint64_t);
 
-    if (size != CELL_SIZE) {
-        fputs("miniml: unsupported object size\n", stderr);
-        exit(1);
-    }
+    uint64_t header = words << 10 | (tag & 255);
 
     if (gc_stress) collect();
 
-    void *p = take_cell();
+    uint64_t *p = take_cell(words);
     if (p == NULL) {
         collect();
-        p = take_cell();
+        p = take_cell(words);
     }
     if (p == NULL) {
         if (grow_heap() == -1) {
             fputs("miniml: out of memory\n", stderr);
             exit(1);
         }
-        p = take_cell();
+        p = take_cell(words);
     }
-    return p;
+    p[0] = header;
+    return p + 1;
 }
 
 int64_t miniml_run(int64_t (*entry)(void)) {
