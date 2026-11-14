@@ -183,12 +183,13 @@ fn main() -> miette::Result<()> {
 
 fn result_kind(tp: &typecheck::TypeExpr) -> ResultKind {
     match tp {
-        typecheck::TypeExpr::Int => ResultKind::Int,
-        typecheck::TypeExpr::Bool => ResultKind::Bool,
         typecheck::TypeExpr::Unit => ResultKind::Unit,
+        typecheck::TypeExpr::Bool => ResultKind::Bool,
+        typecheck::TypeExpr::Char => ResultKind::Char,
+        typecheck::TypeExpr::Int => ResultKind::Int,
+        typecheck::TypeExpr::String => ResultKind::String,
         typecheck::TypeExpr::Arrow(..) => ResultKind::Function,
         typecheck::TypeExpr::Var(..) | typecheck::TypeExpr::UnifVar(_) => ResultKind::Never,
-        _ => todo!(),
     }
 }
 

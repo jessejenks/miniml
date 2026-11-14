@@ -51,9 +51,11 @@ type Result<T> = std::result::Result<T, CodegenError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultKind {
-    Int,
-    Bool,
     Unit,
+    Bool,
+    Char,
+    Int,
+    String,
     Function,
     /// no return value expected
     Never,
@@ -244,7 +246,7 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     /// define internal tailcc i64 @print(ptr %env)
-    /// Effectively `fun n => { printf("%lld\n", n); () }`
+    /// Effectively `fun s => { printf("%s\n", s); () }`
     fn define_print(&mut self) -> Result<()> {
         let f = self.print_fn;
         self.builder
@@ -253,14 +255,14 @@ impl<'ctx> Compiler<'ctx> {
         env.set_name("env");
         self.env_slot = Some(self.new_env_slot(env)?);
 
-        let n = self.access(0)?;
-        let n = self.unbox_int(n)?;
+        let s = self.access(0)?;
+        let s = self.builder.build_int_to_ptr(s, self.ptr_type, "str")?;
         let format = self
             .builder
-            .build_global_string_ptr("%lld\n", "print.format")?;
+            .build_global_string_ptr("%s\n", "print.format")?;
         self.builder.build_direct_call(
             self.printf,
-            &[format.as_pointer_value().into(), n.into()],
+            &[format.as_pointer_value().into(), s.into()],
             "",
         )?;
         let unit = self.box_const(0)?;
@@ -758,10 +760,7 @@ impl<'ctx> Compiler<'ctx> {
                 self.builder.build_return(Some(&exit_code))?;
                 return Ok(());
             }
-            ResultKind::Int => {
-                let n = self.unbox_int(result)?;
-                self.call_printf(&format!("{label}%lld\n"), &[n.into()])?;
-            }
+            ResultKind::Unit => self.call_printf(&format!("{label}()\n"), &[])?,
             ResultKind::Bool => {
                 let n = self.unbox_int(result)?;
                 let is_true = self.builder.build_int_compare(
@@ -780,7 +779,19 @@ impl<'ctx> Compiler<'ctx> {
                 )?;
                 self.call_printf(&format!("{label}%s\n"), &[s.into()])?;
             }
-            ResultKind::Unit => self.call_printf(&format!("{label}()\n"), &[])?,
+            ResultKind::Char => {
+                todo!()
+            }
+            ResultKind::Int => {
+                let n = self.unbox_int(result)?;
+                self.call_printf(&format!("{label}%lld\n"), &[n.into()])?;
+            }
+            ResultKind::String => {
+                let s = self
+                    .builder
+                    .build_int_to_ptr(result, self.ptr_type, "str")?;
+                self.call_printf(&format!("{label}\"%s\"\n"), &[s.into()])?;
+            }
             ResultKind::Function => self.call_printf(&format!("{label}<fun>\n"), &[])?,
             ResultKind::Never => {}
         }
@@ -915,10 +926,42 @@ impl<'ctx> Compiler<'ctx> {
 
     fn compile_primitive(&mut self, expr: &ast::Expr) -> Result<IntValue<'ctx>> {
         match &expr.kind {
-            ast::ExprKind::Char(_) | ast::ExprKind::String(_) => todo!(),
             ast::ExprKind::Unit => self.box_const(0),
             ast::ExprKind::Bool(b) => self.box_const(i64::from(*b)),
+            ast::ExprKind::Char(c) => self.box_const(*c as i64),
             ast::ExprKind::Int(n) => self.box_const(*n),
+            ast::ExprKind::String(s) => {
+                // OCaml / Damien Doligez string encoding
+                // jessejenks.github.io/blog/ocaml-strings
+                let len = s.len();
+                let words = len / 8 + 1;
+                let mut bytes = s.as_bytes().to_vec();
+                // null padding
+                bytes.resize(8 * words - 1, 0);
+                // last byte
+                let r = 8 * words - len;
+                bytes.push(u8::try_from(r - 1).unwrap());
+                let header = self.word.const_int(((words as u64) << 10) | 0xFC, false);
+                let data = self.context.const_string(&bytes, false);
+                let value = self
+                    .context
+                    .const_struct(&[header.into(), data.into()], false);
+
+                let global = self.module.add_global(value.get_type(), None, "str");
+                global.set_initializer(&value);
+                global.set_constant(true);
+                global.set_linkage(Linkage::Private);
+                global.set_alignment(8);
+
+                // point to data, not header
+                let ptr = self.builder.build_struct_gep(
+                    value.get_type(),
+                    global.as_pointer_value(),
+                    1,
+                    "str.ptr",
+                )?;
+                Ok(self.builder.build_ptr_to_int(ptr, self.word, "str.word")?)
+            }
             ast::ExprKind::Unary(op, expr) => {
                 let value = self.compile_expression(expr)?;
                 let value = self.unbox_int(value)?;
@@ -931,6 +974,9 @@ impl<'ctx> Compiler<'ctx> {
                 };
                 self.box_int(result)
             }
+            ast::ExprKind::Binary(ast::BinaryOp::Concat, _left, _right) => {
+                todo!()
+            }
             ast::ExprKind::Binary(op @ (ast::BinaryOp::And | ast::BinaryOp::Or), left, right) => {
                 self.compile_short_circuit(*op, left, right)
             }
@@ -941,7 +987,6 @@ impl<'ctx> Compiler<'ctx> {
                 let r = self.unbox_int(r)?;
                 let b = &self.builder;
                 let result = match op {
-                    ast::BinaryOp::Concat => todo!(),
                     ast::BinaryOp::Add => b.build_int_add(l, r, "add")?,
                     ast::BinaryOp::Sub => b.build_int_sub(l, r, "sub")?,
                     ast::BinaryOp::Mul => b.build_int_mul(l, r, "mul")?,
@@ -954,6 +999,7 @@ impl<'ctx> Compiler<'ctx> {
                     ast::BinaryOp::BitAnd => b.build_and(l, r, "and")?,
                     ast::BinaryOp::BitOr => b.build_or(l, r, "or")?,
                     ast::BinaryOp::And | ast::BinaryOp::Or => unreachable!("short-circuits"),
+                    ast::BinaryOp::Concat => unreachable!("string concatenation"),
                 };
                 self.box_int(result)
             }
@@ -1126,9 +1172,9 @@ mod tests {
         agrees("if false && (1 2) == 0 then 1 else 2");
         agrees("if true || ((fun x => x x) (fun x => x x)) == 0 then 1 else 2");
         // print. output isn't checked
-        agrees("print 3; 4");
-        agrees("let p = print; p 1; p 2; 5");
-        agrees("(fun f => { f 6; 7 }) print");
+        agrees("print \"3\"; 4");
+        agrees("let p = print; p \"1\"; p \"2\"; 5");
+        agrees("(fun f => { f \"6\"; 7 }) print");
     }
 
     #[test]
