@@ -36,7 +36,7 @@ Compared to the initial runtime (`5707e42`), I've already improved performance o
 
 - make ~64% fewer allocations,
 - use ~97% less (peak) memory, and
-- run ~6.3x faster.
+- run ~4.9x faster.
 
 See [the benchmarks section](#benchmarks) below for more details.
 
@@ -322,35 +322,44 @@ compares programs compiled with `-O0`.
 |                 | `5520f05` |           - |      60.23% |    82.07% |
 |                 | `c348bb2` |           - |      60.04% |    81.91% |
 |                 | `b8044f3` |           - |      98.66% |    82.29% |
+|                 | `8cedc21` |           - |      98.66% |    77.05% |
 |                 |           |             |             |           |
 | `curried.mml`   | `fc1e20b` |      35.29% |      35.17% |    36.14% |
 |                 | `ad2056d` |      70.59% |      70.31% |    69.03% |
 |                 | `5520f05` |           - |      70.80% |    88.76% |
 |                 | `c348bb2` |           - |      70.61% |    89.17% |
 |                 | `b8044f3` |           - |      99.24% |    89.54% |
+|                 | `8cedc21` |           - |      99.24% |    86.34% |
 |                 |           |             |             |           |
 | `fib.mml`       | `fc1e20b` |       0.00% |      -0.33% |   -16.17% |
 |                 | `ad2056d` |      66.67% |      64.26% |    62.03% |
 |                 | `5520f05` |           - |      64.92% |    80.45% |
 |                 | `c348bb2` |           - |      64.59% |    80.08% |
 |                 | `b8044f3` |           - |      93.44% |    81.20% |
+|                 | `8cedc21` |           - |      93.44% |    78.20% |
 |                 |           |             |             |           |
 | `garbage.mml`   | `fc1e20b` |      18.18% |      18.07% |    19.31% |
 |                 | `ad2056d` |      54.55% |      54.20% |    52.43% |
 |                 | `5520f05` |           - |      54.95% |    85.69% |
 |                 | `c348bb2` |           - |      54.66% |    84.92% |
 |                 | `b8044f3` |           - |      98.83% |    86.19% |
+|                 | `8cedc21` |           - |      98.83% |    79.70% |
 |                 |           |             |             |           |
 | `recursion.mml` | `fc1e20b` |       0.01% |       0.00% |     0.44% |
 |                 | `ad2056d` |      66.67% |      64.18% |    54.07% |
 |                 | `5520f05` |           - |      64.60% |    73.85% |
 |                 | `c348bb2` |           - |      64.39% |    73.41% |
 |                 | `b8044f3` |           - |      94.00% |    72.09% |
+|                 | `8cedc21` |           - |      94.00% |    70.11% |
+
+Notes:
+
+- `8cedc21` is slower because objects now have headers. This takes up more memory and makes gc more complex.
 
 ## Future Work
 
-- [x] garbage collector
-- [ ] Strings
+- [x] Garbage collection
+- [x] Strings and characters
 - [ ] Tuple types
 - [ ] Algebraic data types
 - [ ] Pattern matching
