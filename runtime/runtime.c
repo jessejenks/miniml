@@ -503,10 +503,35 @@ uint64_t miniml_char_to_str(uint64_t w) {
     return make_string(buf, len);
 }
 
+// matches `escape_str` in lexer.rs
+static void print_escaped(const char *bytes, uint64_t len, char quote) {
+    for (uint64_t i = 0; i < len; i++) {
+        char b = bytes[i];
+        switch (b) {
+        case '\n': fputs("\\n", stdout); break;
+        case '\r': fputs("\\r", stdout); break;
+        case '\t': fputs("\\t", stdout); break;
+        case '\0': fputs("\\0", stdout); break;
+        case '\\': fputs("\\\\", stdout); break;
+        default:
+            if (b == quote) putchar('\\');
+            putchar(b);
+        }
+    }
+}
+
 void miniml_print_char(uint64_t c) {
-    char buf[5] = {0};
-    encode_char(c, buf);
-    fputs(buf, stdout);
+    char buf[4];
+    int len = encode_char(c, buf);
+    print_escaped(buf, len, '\'');
+}
+
+void miniml_print_string(uint64_t s) {
+    fwrite((char *)s, 1, string_length((uint64_t *)s), stdout);
+}
+
+void miniml_print_string_escaped(uint64_t s) {
+    print_escaped((char *)s, string_length((uint64_t *)s), '"');
 }
 
 uint64_t miniml_int_to_str(uint64_t w) {

@@ -1,4 +1,5 @@
 use crate::ast;
+use crate::lexer;
 use crate::surface;
 
 pub fn surface_to_core(program: surface::Expr) -> ast::Expr {
@@ -11,7 +12,7 @@ fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) 
         surface::ExprKind::Char(c) => ast::ExprKind::Char(c),
         surface::ExprKind::Bool(b) => ast::ExprKind::Bool(b),
         surface::ExprKind::Int(n) => ast::ExprKind::Int(n),
-        surface::ExprKind::String(s) => ast::ExprKind::String(s.to_string()),
+        surface::ExprKind::String(s) => ast::ExprKind::String(lexer::unescape_str(s)),
         surface::ExprKind::Variable(x) => match scope.iter().rev().position(|&n| n == x) {
             Some(index) => ast::ExprKind::BoundVariable(i64::try_from(index).unwrap()),
             None => ast::ExprKind::FreeVariable(x.to_string()),

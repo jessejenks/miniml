@@ -74,6 +74,8 @@ pub struct Compiler<'ctx> {
     miniml_equal: FunctionValue<'ctx>,
     miniml_string_concat: FunctionValue<'ctx>,
     miniml_print_char: FunctionValue<'ctx>,
+    miniml_print_string: FunctionValue<'ctx>,
+    miniml_print_string_escaped: FunctionValue<'ctx>,
     miniml_len: FunctionValue<'ctx>,
     miniml_unit_to_str: FunctionValue<'ctx>,
     miniml_bool_to_str: FunctionValue<'ctx>,
@@ -127,9 +129,21 @@ impl<'ctx> Compiler<'ctx> {
             word.fn_type(&[word.into(), word.into()], false),
             None,
         );
-        // declare void @miniml_string_concat(i64)
+        // declare void @miniml_print_char(i64)
         let miniml_print_char = module.add_function(
             "miniml_print_char",
+            context.void_type().fn_type(&[word.into()], false),
+            None,
+        );
+        // declare void @miniml_print_string(i64)
+        let miniml_print_string = module.add_function(
+            "miniml_print_string",
+            context.void_type().fn_type(&[word.into()], false),
+            None,
+        );
+        // declare void @miniml_print_string_escaped(i64)
+        let miniml_print_string_escaped = module.add_function(
+            "miniml_print_string_escaped",
             context.void_type().fn_type(&[word.into()], false),
             None,
         );
@@ -218,6 +232,8 @@ impl<'ctx> Compiler<'ctx> {
             miniml_equal,
             miniml_string_concat,
             miniml_print_char,
+            miniml_print_string,
+            miniml_print_string_escaped,
             miniml_len,
             miniml_unit_to_str,
             miniml_bool_to_str,
@@ -341,15 +357,9 @@ impl<'ctx> Compiler<'ctx> {
         self.begin_builtin(self.builtin_print)?;
 
         let s = self.access(0)?;
-        let s = self.builder.build_int_to_ptr(s, self.ptr_type, "str")?;
-        let format = self
-            .builder
-            .build_global_string_ptr("%s\n", "print.format")?;
-        self.builder.build_direct_call(
-            self.printf,
-            &[format.as_pointer_value().into(), s.into()],
-            "",
-        )?;
+        self.builder
+            .build_direct_call(self.miniml_print_string, &[s.into()], "")?;
+        self.call_printf("\n", &[])?;
         let unit = self.box_const(0)?;
         self.ret(unit)?;
 
@@ -933,10 +943,13 @@ impl<'ctx> Compiler<'ctx> {
                 self.call_printf(&format!("{label}%lld\n"), &[n.into()])?;
             }
             ResultKind::String => {
-                let s = self
-                    .builder
-                    .build_int_to_ptr(result, self.ptr_type, "str")?;
-                self.call_printf(&format!("{label}\"%s\"\n"), &[s.into()])?;
+                self.call_printf(&format!("{label}\""), &[])?;
+                self.builder.build_direct_call(
+                    self.miniml_print_string_escaped,
+                    &[result.into()],
+                    "",
+                )?;
+                self.call_printf("\"\n", &[])?;
             }
             ResultKind::Function => self.call_printf(&format!("{label}<fun>\n"), &[])?,
             ResultKind::Never => {}
@@ -1253,6 +1266,7 @@ mod tests {
         fn miniml_alloc(words: u64, tag: u64) -> *mut u8;
         fn miniml_equal(left: u64, right: u64) -> u64;
         fn miniml_string_concat(left: u64, right: u64) -> u64;
+        fn miniml_print_string(s: u64);
         fn miniml_len(s: u64) -> u64;
         fn miniml_unit_to_str() -> u64;
         fn miniml_bool_to_str(b: u64) -> u64;
@@ -1295,6 +1309,10 @@ mod tests {
         engine.add_global_mapping(
             &module.get_function("miniml_string_concat").unwrap(),
             miniml_string_concat as *const () as usize,
+        );
+        engine.add_global_mapping(
+            &module.get_function("miniml_print_string").unwrap(),
+            miniml_print_string as *const () as usize,
         );
         engine.add_global_mapping(
             &module.get_function("miniml_len").unwrap(),

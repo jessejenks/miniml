@@ -1,4 +1,5 @@
 use crate::ast::{BinaryOp, Span, UnaryOp};
+use crate::lexer::escape_str;
 use std::fmt::Display;
 
 pub struct Identifier<'a> {
@@ -27,7 +28,7 @@ impl Display for ExprKind<'_> {
         match self {
             ExprKind::Unit => write!(f, "()"),
             ExprKind::Bool(b) => write!(f, "{b}"),
-            ExprKind::Char(c) => write!(f, "'{c}'"),
+            ExprKind::Char(c) => write!(f, "'{}'", escape_str(&c.to_string(), '\'')),
             ExprKind::Int(n) => write!(f, "{n}"),
             ExprKind::String(s) => write!(f, "\"{s}\""),
             ExprKind::Variable(x) => write!(f, "{x}"),

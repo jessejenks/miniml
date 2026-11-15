@@ -1,3 +1,4 @@
+use crate::lexer::escape_str;
 use std::{fmt::Display, ops::Range};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,9 +109,9 @@ impl Display for ExprKind {
         match self {
             ExprKind::Unit => write!(f, "()"),
             ExprKind::Bool(b) => write!(f, "{b}"),
-            ExprKind::Char(c) => write!(f, "'{c}'"),
+            ExprKind::Char(c) => write!(f, "'{}'", escape_str(&c.to_string(), '\'')),
             ExprKind::Int(n) => write!(f, "{n}"),
-            ExprKind::String(s) => write!(f, "\"{s}\""),
+            ExprKind::String(s) => write!(f, "\"{}\"", escape_str(s, '"')),
             ExprKind::FreeVariable(x) => write!(f, "{x}"),
             ExprKind::BoundVariable(i) => write!(f, "#{i}"),
             ExprKind::Application(left, right) => write!(f, "({left} {right})"),

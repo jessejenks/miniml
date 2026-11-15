@@ -29,6 +29,58 @@ pub enum LexError {
         #[label("no closing quote found for string")]
         span: SourceSpan,
     },
+    #[error("invalid escape sequence")]
+    #[diagnostic(
+        code(lexer::invalid_escape),
+        help("valid escapes are \\n \\r \\t \\0 \\\\ \\' \\\"")
+    )]
+    InvalidEscape {
+        #[label("not a valid escape")]
+        span: SourceSpan,
+    },
+}
+
+const ESCAPES: [(char, char); 7] = [
+    ('n', '\n'),
+    ('r', '\r'),
+    ('t', '\t'),
+    ('0', '\0'),
+    ('\\', '\\'),
+    ('\'', '\''),
+    ('"', '"'),
+];
+
+pub fn unescape(letter: char) -> Option<char> {
+    ESCAPES.iter().find(|(l, _)| *l == letter).map(|(_, c)| *c)
+}
+
+pub fn unescape_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            let letter = chars.next().expect("lexer rejects a trailing backslash");
+            out.push(unescape(letter).expect("lexer rejects invalid escapes"));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+pub fn escape_str(s: &str, quote: char) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match ESCAPES.iter().find(|(_, e)| *e == c) {
+            // only escape the quote we are inside of
+            Some((letter, e)) if (*e != '\'' && *e != '"') || *e == quote => {
+                out.push('\\');
+                out.push(*letter);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -261,14 +313,9 @@ impl<'a> Iterator for Lexer<'a> {
             }
             '\'' => {
                 let c = match self.chars.next() {
-                    Some((_, '\\')) => match self.chars.next() {
-                        Some((_, 'n')) => '\n',
-                        Some((_, 'r')) => '\r',
-                        Some((_, 't')) => '\t',
-                        Some((_, '0')) => '\0',
-                        Some((_, '\\')) => '\\',
-                        Some((_, '\'')) => '\'',
-                        _ => {
+                    Some((_, '\\')) => match self.chars.next().and_then(|(_, l)| unescape(l)) {
+                        Some(c) => c,
+                        None => {
                             return Some(Err(LexError::NotACharacter {
                                 span: (start..self.chars.offset()).into(),
                             }));
@@ -291,9 +338,19 @@ impl<'a> Iterator for Lexer<'a> {
             '"' => {
                 loop {
                     match self.chars.next() {
-                        Some((_, '\\')) => {
-                            self.chars.next();
-                        }
+                        Some((escape_start, '\\')) => match self.chars.next() {
+                            Some((_, letter)) if unescape(letter).is_some() => {}
+                            Some(_) => {
+                                return Some(Err(LexError::InvalidEscape {
+                                    span: (escape_start..self.chars.offset()).into(),
+                                }));
+                            }
+                            None => {
+                                return Some(Err(LexError::UnterminatedString {
+                                    span: (start..self.chars.offset()).into(),
+                                }));
+                            }
+                        },
                         Some((_, '"')) => {
                             break;
                         }

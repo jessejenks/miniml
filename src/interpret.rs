@@ -1,4 +1,5 @@
 use crate::ast;
+use crate::lexer::escape_str;
 use std::fmt::Display;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -23,9 +24,9 @@ impl Display for Expr {
         match self {
             Expr::Unit => write!(f, "()"),
             Expr::Bool(b) => write!(f, "{b}"),
-            Expr::Char(c) => write!(f, "'{c}'"),
+            Expr::Char(c) => write!(f, "'{}'", escape_str(&c.to_string(), '\'')),
             Expr::Int(n) => write!(f, "{n}"),
-            Expr::String(s) => write!(f, "\"{s}\""),
+            Expr::String(s) => write!(f, "\"{}\"", escape_str(s, '"')),
             Expr::FreeVariable(x) => write!(f, "{x}"),
             Expr::BoundVariable(i) => write!(f, "#{i}"),
             Expr::Application(left, right) => write!(f, "({left} {right})"),
