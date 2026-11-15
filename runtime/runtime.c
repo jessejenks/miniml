@@ -411,6 +411,19 @@ void *miniml_alloc(uint64_t words, uint64_t tag) {
     return p + 1;
 }
 
+int64_t miniml_equal(uint64_t left, uint64_t right) {
+    if (left == right) return 1;
+    if ((left & 1) || (right & 1)) return 0;
+    uint64_t *p = (uint64_t *)left;
+    uint64_t *q = (uint64_t *)right;
+    if (header_tag(p[-1]) != header_tag(q[-1])) return 0;
+    if (header_size(p[-1]) != header_size(q[-1])) return 0;
+    if (header_tag(p[-1]) == STRING_TAG) {
+        return memcmp(p, q, header_size(p[-1]) * sizeof(uint64_t)) == 0;
+    }
+    return 0;
+}
+
 int64_t miniml_run(int64_t (*entry)(void)) {
     volatile uint64_t marker = 0;
     stack_base = (uint64_t *)&marker;

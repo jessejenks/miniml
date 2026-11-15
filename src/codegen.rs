@@ -72,6 +72,7 @@ pub struct Compiler<'ctx> {
     module: Module<'ctx>,
     builder: Builder<'ctx>,
     miniml_alloc: FunctionValue<'ctx>,
+    miniml_equal: FunctionValue<'ctx>,
     cons_fn: FunctionValue<'ctx>,
     closure_fn: FunctionValue<'ctx>,
     printf: FunctionValue<'ctx>,
@@ -101,6 +102,12 @@ impl<'ctx> Compiler<'ctx> {
         let miniml_alloc = module.add_function(
             "miniml_alloc",
             ptr_type.fn_type(&[word.into(), word.into()], false),
+            None,
+        );
+        // declare i64 @miniml_equal(i64, i64)
+        let miniml_equal = module.add_function(
+            "miniml_equal",
+            word.fn_type(&[word.into(), word.into()], false),
             None,
         );
         // declare i32 @printf(ptr, ...)
@@ -143,6 +150,7 @@ impl<'ctx> Compiler<'ctx> {
             module,
             builder,
             miniml_alloc,
+            miniml_equal,
             cons_fn,
             closure_fn,
             printf,
@@ -977,6 +985,20 @@ impl<'ctx> Compiler<'ctx> {
             ast::ExprKind::Binary(ast::BinaryOp::Concat, _left, _right) => {
                 todo!()
             }
+            ast::ExprKind::Binary(ast::BinaryOp::Eq, left, right) => {
+                let l = self.compile_expression(left)?;
+                let r = self.compile_expression(right)?;
+                let eq = if Self::is_immediate(left) || Self::is_immediate(right) {
+                    self.compare(IntPredicate::EQ, l, r)?
+                } else {
+                    self.builder
+                        .build_direct_call(self.miniml_equal, &[l.into(), r.into()], "eq")?
+                        .try_as_basic_value()
+                        .expect_basic("miniml_equal returns a value")
+                        .into_int_value()
+                };
+                self.box_int(eq)
+            }
             ast::ExprKind::Binary(op @ (ast::BinaryOp::And | ast::BinaryOp::Or), left, right) => {
                 self.compile_short_circuit(*op, left, right)
             }
@@ -995,10 +1017,10 @@ impl<'ctx> Compiler<'ctx> {
                     ast::BinaryOp::Gt => self.compare(IntPredicate::SGT, l, r)?,
                     ast::BinaryOp::Lte => self.compare(IntPredicate::SLE, l, r)?,
                     ast::BinaryOp::Gte => self.compare(IntPredicate::SGE, l, r)?,
-                    ast::BinaryOp::Eq => self.compare(IntPredicate::EQ, l, r)?,
                     ast::BinaryOp::BitAnd => b.build_and(l, r, "and")?,
                     ast::BinaryOp::BitOr => b.build_or(l, r, "or")?,
                     ast::BinaryOp::And | ast::BinaryOp::Or => unreachable!("short-circuits"),
+                    ast::BinaryOp::Eq => unreachable!("equality comparison"),
                     ast::BinaryOp::Concat => unreachable!("string concatenation"),
                 };
                 self.box_int(result)
@@ -1057,6 +1079,16 @@ impl<'ctx> Compiler<'ctx> {
         let one = self.word.const_int(1, false);
         Ok(self.builder.build_right_shift(v, one, true, "unboxed")?)
     }
+
+    fn is_immediate(e: &ast::Expr) -> bool {
+        matches!(
+            e.kind,
+            ast::ExprKind::Unit
+                | ast::ExprKind::Bool(_)
+                | ast::ExprKind::Char(_)
+                | ast::ExprKind::Int(_)
+        )
+    }
 }
 
 #[cfg(test)]
@@ -1074,6 +1106,7 @@ mod tests {
         fn miniml_run(entry: unsafe extern "C" fn() -> i64) -> i64;
         fn miniml_reset();
         fn miniml_alloc(words: u64, tag: u64) -> *mut u8;
+        fn miniml_equal(left: u64, right: u64) -> u64;
     }
 
     static RUNTIME_LOCK: Mutex<()> = Mutex::new(());
@@ -1103,6 +1136,10 @@ mod tests {
         engine.add_global_mapping(
             &module.get_function("miniml_alloc").unwrap(),
             miniml_alloc as *const () as usize,
+        );
+        engine.add_global_mapping(
+            &module.get_function("miniml_equal").unwrap(),
+            miniml_equal as *const () as usize,
         );
         let _guard = RUNTIME_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         unsafe {
@@ -1175,6 +1212,15 @@ mod tests {
         agrees("print \"3\"; 4");
         agrees("let p = print; p \"1\"; p \"2\"; 5");
         agrees("(fun f => { f \"6\"; 7 }) print");
+        // equality, written as if else because true != 1
+        agrees("if () == () then 1 else 2");
+        agrees("if true == true then 1 else 2");
+        agrees("if true == false then 1 else 2");
+        agrees("if 'a' == 'a' then 1 else 2");
+        agrees("if 'a' == 'b' then 1 else 2");
+        agrees("if 123 == 123 then 1 else 2");
+        agrees("if \"abc\" == \"abc\" then 1 else 2");
+        agrees("if \"abc\" == \"def\" then 1 else 2");
     }
 
     #[test]
