@@ -74,6 +74,7 @@ pub struct Compiler<'ctx> {
     miniml_alloc: FunctionValue<'ctx>,
     miniml_equal: FunctionValue<'ctx>,
     miniml_string_concat: FunctionValue<'ctx>,
+    miniml_print_char: FunctionValue<'ctx>,
     cons_fn: FunctionValue<'ctx>,
     closure_fn: FunctionValue<'ctx>,
     printf: FunctionValue<'ctx>,
@@ -115,6 +116,12 @@ impl<'ctx> Compiler<'ctx> {
         let miniml_string_concat = module.add_function(
             "miniml_string_concat",
             word.fn_type(&[word.into(), word.into()], false),
+            None,
+        );
+        // declare void @miniml_string_concat(i64)
+        let miniml_print_char = module.add_function(
+            "miniml_print_char",
+            context.void_type().fn_type(&[word.into()], false),
             None,
         );
         // declare i32 @printf(ptr, ...)
@@ -159,6 +166,7 @@ impl<'ctx> Compiler<'ctx> {
             miniml_alloc,
             miniml_equal,
             miniml_string_concat,
+            miniml_print_char,
             cons_fn,
             closure_fn,
             printf,
@@ -796,7 +804,11 @@ impl<'ctx> Compiler<'ctx> {
                 self.call_printf(&format!("{label}%s\n"), &[s.into()])?;
             }
             ResultKind::Char => {
-                todo!()
+                let c = self.unbox_int(result)?;
+                self.call_printf(&format!("{label}'"), &[])?;
+                self.builder
+                    .build_direct_call(self.miniml_print_char, &[c.into()], "")?;
+                self.call_printf("'\n", &[])?;
             }
             ResultKind::Int => {
                 let n = self.unbox_int(result)?;

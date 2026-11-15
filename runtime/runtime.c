@@ -444,6 +444,29 @@ uint64_t miniml_string_concat(uint64_t left, uint64_t right) {
     return (uint64_t)p;
 }
 
+void miniml_print_char(uint64_t c) {
+    char buf[5] = {0};
+    if (c < 0x80) {
+        buf[0] = c;
+    } else if (c < 0x800) {
+        // 110xxxxx 10xxxxxx
+        buf[0] = 0xC0 | (c >> 6);
+        buf[1] = 0x80 | (c & 0x3F);
+    } else if (c < 0x10000) {
+        // 1110xxxx 10xxxxxx 10xxxxxx
+        buf[0] = 0xE0 | (c >> 12);
+        buf[1] = 0x80 | ((c >> 6) & 0x3F);
+        buf[2] = 0x80 | (c & 0x3F);
+    } else {
+        // 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+        buf[0] = 0xF0 | (c >> 18);
+        buf[1] = 0x80 | ((c >> 12) & 0x3F);
+        buf[2] = 0x80 | ((c >> 6) & 0x3F);
+        buf[3] = 0x80 | (c & 0x3F);
+    }
+    fputs(buf, stdout);
+}
+
 int64_t miniml_run(int64_t (*entry)(void)) {
     volatile uint64_t marker = 0;
     stack_base = (uint64_t *)&marker;
