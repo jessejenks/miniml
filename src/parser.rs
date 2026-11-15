@@ -336,6 +336,18 @@ impl<'a> Parser<'a> {
             Token::Keyword(Keyword::If) => self.if_else(start),
             Token::LParen => {
                 let e = self.expression(0)?;
+                if self.chomp_if_next_is(Token::Comma)? {
+                    let mut elements = vec![e, self.expression(0)?];
+                    while self.chomp_if_next_is(Token::Comma)? {
+                        elements.push(self.expression(0)?);
+                    }
+                    let (_, _, paren_end) = self.expect(Token::RParen)?;
+                    return Ok(surface::Expr::new(
+                        surface::ExprKind::Tuple(elements),
+                        start,
+                        paren_end,
+                    ));
+                }
                 let (_, _, paren_end) = self.expect(Token::RParen)?;
                 Ok(surface::Expr::new(e.kind, start, paren_end))
             }
@@ -603,6 +615,23 @@ mod tests {
         assert_eq!(
             parse("fun x, y, z => x + y + z").to_string(),
             "(fun x, y, z => ((x + y) + z))"
+        );
+        assert_eq!(parse("(1, 2)").to_string(), "(1, 2)");
+        assert_eq!(parse("((), 'a')").to_string(), "((), 'a')");
+        assert_eq!(parse("((1, 2), 3)").to_string(), "((1, 2), 3)");
+        assert_eq!(parse("(1, (2, 3))").to_string(), "(1, (2, 3))");
+        assert_eq!(parse("((1, 2), (3, 4))").to_string(), "((1, 2), (3, 4))");
+        assert_eq!(
+            parse("(fun x => (x, x), fun y => (y, y))").to_string(),
+            "((fun x => (x, x)), (fun y => (y, y)))"
+        );
+        assert_eq!(
+            parse("(fun x => x, fun y, z => (y, z))").to_string(),
+            "((fun x => x), (fun y, z => (y, z)))"
+        );
+        assert_eq!(
+            parse("fun x, y => (x, y)").to_string(),
+            "(fun x, y => (x, y))"
         );
     }
 

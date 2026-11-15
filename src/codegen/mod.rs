@@ -53,6 +53,7 @@ pub enum ResultKind {
     Char,
     Int,
     String,
+    Tuple,
     Function,
     /// no return value expected
     Never,
@@ -328,6 +329,7 @@ impl<'ctx> Compiler<'ctx> {
                 )?;
                 self.call_printf("\"\n", &[])?;
             }
+            ResultKind::Tuple => todo!(),
             ResultKind::Function => self.call_printf(&format!("{label}<fun>\n"), &[])?,
             ResultKind::Never => {}
         }

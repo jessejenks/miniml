@@ -17,6 +17,7 @@ pub enum Expr {
     IfElse(Box<Expr>, Box<Expr>, Box<Expr>),
     Unary(ast::UnaryOp, Box<Expr>),
     Binary(ast::BinaryOp, Box<Expr>, Box<Expr>),
+    Tuple(Vec<Expr>),
 }
 
 impl Display for Expr {
@@ -41,6 +42,16 @@ impl Display for Expr {
             }
             Expr::Unary(op, expr) => write!(f, "({op} {expr})"),
             Expr::Binary(op, left, right) => write!(f, "({op} {left} {right})"),
+            Expr::Tuple(elements) => {
+                write!(f, "(")?;
+                for (i, elt) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{elt}")?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }
@@ -74,6 +85,7 @@ fn to_spanless(expr: &ast::Expr) -> Expr {
             Box::new(to_spanless(left)),
             Box::new(to_spanless(right)),
         ),
+        ast::ExprKind::Tuple(elements) => Expr::Tuple(elements.iter().map(to_spanless).collect()),
     }
 }
 
@@ -112,6 +124,9 @@ fn shift(i: i64, c: i64, expr: Expr) -> Expr {
             Box::new(shift(i, c, *left)),
             Box::new(shift(i, c, *right)),
         ),
+        Expr::Tuple(elements) => {
+            Expr::Tuple(elements.into_iter().map(|e| shift(i, c, e)).collect())
+        }
     }
 }
 
@@ -159,6 +174,12 @@ fn substitute(t: Expr, n: i64, expr: Expr) -> Expr {
             op,
             Box::new(substitute(*left, n, expr.clone())),
             Box::new(substitute(*right, n, expr)),
+        ),
+        Expr::Tuple(elements) => Expr::Tuple(
+            elements
+                .into_iter()
+                .map(|e| substitute(e, n, expr.clone()))
+                .collect(),
         ),
     }
 }
@@ -271,6 +292,7 @@ fn cbv(expr: Expr) -> Expr {
                 (op, l, r) => Expr::Binary(op, Box::new(l), Box::new(r)),
             }
         }
+        Expr::Tuple(elements) => Expr::Tuple(elements.into_iter().map(cbv).collect()),
         x => x,
     }
 }
@@ -338,6 +360,7 @@ mod tests {
             .to_string(),
             "(λ.(if (< #0 2) then 1 else (* #0 ((let rec (λ.(if (< #0 2) then 1 else (* #0 (#1 (- #0 1))))) in #0) (- #0 1)))))"
         );
+        assert_eq!(interp("(1 + 2, 3)").to_string(), "(3, 3)");
         // builtins
         assert_eq!(interp("print ()").to_string(), "(print ())");
         assert_eq!(interp("print 3").to_string(), "(print 3)");

@@ -15,6 +15,7 @@ pub enum TypeExpr {
     Var(i64, bool), // is this an eq variable
     UnifVar(u32),
     Arrow(Rc<TypeExpr>, Rc<TypeExpr>),
+    Product(Rc<[TypeExpr]>),
 }
 
 impl TypeExpr {
@@ -52,6 +53,9 @@ impl TypeExpr {
                 Self::max_type_variable_level(src),
                 Self::max_type_variable_level(tgt),
             ),
+            TypeExpr::Product(elts) => elts
+                .iter()
+                .fold(-1, |acc, e| cmp::max(acc, Self::max_type_variable_level(e))),
         }
     }
 
@@ -85,6 +89,20 @@ impl Display for TypeExpr {
                 } else {
                     write!(f, "{src} -> {tgt}")
                 }
+            }
+            TypeExpr::Product(elts) => {
+                write!(f, "(")?;
+                for (i, e) in elts.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " × ")?;
+                    }
+                    if matches!(e, TypeExpr::Arrow(_, _)) {
+                        write!(f, "({e})")?;
+                    } else {
+                        write!(f, "{e}")?;
+                    }
+                }
+                write!(f, ")")
             }
         }
     }
@@ -219,6 +237,7 @@ impl TypeChecker {
             }
             ast::ExprKind::Unary(op, e) => self.rule_unary(expr.span, *op, e),
             ast::ExprKind::Binary(op, left, right) => self.rule_binary(expr.span, *op, left, right),
+            ast::ExprKind::Tuple(elements) => self.rule_tuple(elements),
         }
     }
 
@@ -390,6 +409,14 @@ impl TypeChecker {
         }
     }
 
+    fn rule_tuple(&mut self, elements: &Vec<ast::Expr>) -> Result<TypeExpr> {
+        let mut elts = Vec::new();
+        for elt in elements {
+            elts.push(self.algorithm_j(elt)?);
+        }
+        Ok(TypeExpr::Product(elts.into()))
+    }
+
     fn new_unification_variable(&mut self, is_eq: bool) -> TypeExpr {
         let id = u32::try_from(self.levels.len()).unwrap();
         self.eq.push(is_eq);
@@ -521,6 +548,11 @@ impl TypeChecker {
                 Rc::new(self.instantiate_inner(src, fresh)),
                 Rc::new(self.instantiate_inner(tgt, fresh)),
             ),
+            TypeExpr::Product(elts) => TypeExpr::Product(
+                elts.iter()
+                    .map(|e| self.instantiate_inner(e, fresh))
+                    .collect(),
+            ),
             TypeExpr::Unit
             | TypeExpr::Bool
             | TypeExpr::Char
@@ -564,6 +596,11 @@ impl TypeChecker {
                 Rc::new(self.generalize_inner((*src).clone(), level, generalized)),
                 Rc::new(self.generalize_inner((*tgt).clone(), level, generalized)),
             ),
+            TypeExpr::Product(elts) => TypeExpr::Product(
+                elts.iter()
+                    .map(|e| self.generalize_inner(e.clone(), level, generalized))
+                    .collect(),
+            ),
             other => other,
         }
     }
@@ -578,6 +615,10 @@ impl TypeChecker {
             TypeExpr::Arrow(src, tgt) => {
                 self.lower_levels((*src).clone(), max_level);
                 self.lower_levels((*tgt).clone(), max_level);
+            }
+            TypeExpr::Product(elts) => {
+                elts.iter()
+                    .for_each(|e| self.lower_levels((*e).clone(), max_level));
             }
             TypeExpr::Unit
             | TypeExpr::Bool
@@ -600,6 +641,7 @@ impl TypeChecker {
             TypeExpr::Arrow(src, tgt) => {
                 self.occurs(id, (*src).clone()) || self.occurs(id, (*tgt).clone())
             }
+            TypeExpr::Product(elts) => elts.iter().any(|e| self.occurs(id, (*e).clone())),
         }
     }
 }
@@ -680,6 +722,16 @@ mod tests {
         assert_eq!(
             check("fun x => fun y => x == y").unwrap(),
             "(∀α.''α -> ''α -> Bool)"
+        );
+        assert_eq!(check("(1, 2)").unwrap(), "(Int × Int)");
+        assert_eq!(check("((), ((), ()))").unwrap(), "(Unit × (Unit × Unit))");
+        assert_eq!(
+            check("(fun x => x, fun y, z => (y, z))").unwrap(),
+            "(∀α.∀β.∀γ.((α -> α) × (β -> γ -> (β × γ))))"
+        );
+        assert_eq!(
+            check("let y = 1; let f = fun z => (y, z); f").unwrap(),
+            "(∀α.α -> (Int × α))"
         );
     }
 

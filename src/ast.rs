@@ -102,6 +102,7 @@ pub enum ExprKind {
     IfElse(Box<Expr>, Box<Expr>, Box<Expr>),
     Unary(UnaryOp, Box<Expr>),
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
+    Tuple(Vec<Expr>),
 }
 
 impl Display for ExprKind {
@@ -126,6 +127,16 @@ impl Display for ExprKind {
             }
             ExprKind::Unary(op, expr) => write!(f, "({op} {expr})"),
             ExprKind::Binary(op, left, right) => write!(f, "({op} {left} {right})"),
+            ExprKind::Tuple(elements) => {
+                write!(f, "(")?;
+                for (i, elt) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{elt}")?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }

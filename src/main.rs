@@ -188,6 +188,7 @@ fn result_kind(tp: &typecheck::TypeExpr) -> ResultKind {
         typecheck::TypeExpr::Char => ResultKind::Char,
         typecheck::TypeExpr::Int => ResultKind::Int,
         typecheck::TypeExpr::String => ResultKind::String,
+        typecheck::TypeExpr::Product(..) => ResultKind::Tuple,
         typecheck::TypeExpr::Arrow(..) => ResultKind::Function,
         typecheck::TypeExpr::Var(..) | typecheck::TypeExpr::UnifVar(_) => ResultKind::Never,
     }

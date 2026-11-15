@@ -66,6 +66,7 @@ pub enum ExprKind<'a> {
     Unary(UnaryOp, Box<Expr<'a>>),
     Binary(BinaryOp, Box<Expr<'a>>, Box<Expr<'a>>),
     Sequence(Box<Expr<'a>>, Box<Expr<'a>>),
+    Tuple(Vec<Expr<'a>>),
 }
 
 impl Display for ExprKind<'_> {
@@ -104,6 +105,16 @@ impl Display for ExprKind<'_> {
             ExprKind::Unary(op, expr) => write!(f, "({op} {expr})"),
             ExprKind::Binary(op, left, right) => write!(f, "({left} {op} {right})"),
             ExprKind::Sequence(left, right) => write!(f, "({left}; {right})"),
+            ExprKind::Tuple(elements) => {
+                write!(f, "(")?;
+                for (i, elt) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{elt}")?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }

@@ -63,6 +63,7 @@ impl<'ctx> Compiler<'ctx> {
 
                 self.merge("if", [(then_value, then_end), (else_value, else_end)])
             }
+            ast::ExprKind::Tuple(_) => todo!(),
         }
     }
 
@@ -118,6 +119,7 @@ impl<'ctx> Compiler<'ctx> {
                 self.builder.position_at_end(else_block);
                 self.compile_expression_tail(alternative)
             }
+            ast::ExprKind::Tuple(_) => todo!(),
         }
     }
 

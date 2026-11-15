@@ -102,6 +102,12 @@ fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) 
             Box::new(surface_to_core_inner(scope, *left)),
             Box::new(surface_to_core_inner(scope, *right)),
         ),
+        surface::ExprKind::Tuple(elements) => ast::ExprKind::Tuple(
+            elements
+                .into_iter()
+                .map(|e| surface_to_core_inner(scope, e))
+                .collect(),
+        ),
         surface::ExprKind::Sequence(left, right) => {
             let left_elabed = surface_to_core_inner(scope, *left);
             scope.push("");
