@@ -2,9 +2,10 @@ use miette::{Diagnostic, SourceSpan};
 use std::iter::Peekable;
 use thiserror::Error;
 
-use crate::ast::{BinaryOp, UnaryOp};
+use crate::ast::UnaryOp;
 use crate::lexer::{Keyword, LexError, Lexer, Spanned, Token};
 use crate::surface;
+use crate::surface::BinaryOp;
 
 #[derive(Debug, Error, Diagnostic)]
 pub enum ParseError {
@@ -66,6 +67,7 @@ fn token_to_binary_op(tok: &Token) -> Option<BinaryOp> {
         Token::Gt => Some(BinaryOp::Gt),
         Token::Lte => Some(BinaryOp::Lte),
         Token::Gte => Some(BinaryOp::Gte),
+        Token::BangEqual => Some(BinaryOp::Neq),
         Token::EqualEqual => Some(BinaryOp::Eq),
         Token::Amp => Some(BinaryOp::BitAnd),
         Token::Pipe => Some(BinaryOp::BitOr),
@@ -388,9 +390,12 @@ impl<'a> Parser<'a> {
         match op {
             BinaryOp::Or => (1, 2, true),
             BinaryOp::And => (3, 4, true),
-            BinaryOp::Lt | BinaryOp::Gt | BinaryOp::Lte | BinaryOp::Gte | BinaryOp::Eq => {
-                (5, 6, false)
-            }
+            BinaryOp::Lt
+            | BinaryOp::Gt
+            | BinaryOp::Lte
+            | BinaryOp::Gte
+            | BinaryOp::Eq
+            | BinaryOp::Neq => (5, 6, false),
             BinaryOp::Concat => (8, 7, true),
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::BitOr => (9, 10, true),
             BinaryOp::Mul | BinaryOp::Div | BinaryOp::BitAnd => (11, 12, true),
@@ -454,6 +459,10 @@ mod tests {
         assert_eq!(
             parse("a ++ b ++ c == d").to_string(),
             "((a ++ (b ++ c)) == d)"
+        );
+        assert_eq!(
+            parse("a != b && c != d").to_string(),
+            "((a != b) && (c != d))"
         );
         assert_eq!(parse("fun x => x").to_string(), "(fun x => x)");
         assert_eq!(parse("let x = x; x").to_string(), "(let x = x; x)");

@@ -1,6 +1,47 @@
-use crate::ast::{BinaryOp, Span, UnaryOp};
+use crate::ast::{Span, UnaryOp};
 use crate::lexer::escape_str;
 use std::fmt::Display;
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Lt,
+    Gt,
+    Lte,
+    Gte,
+    Eq,
+    Neq,
+    Concat,
+    BitAnd,
+    BitOr,
+    And,
+    Or,
+}
+
+impl Display for BinaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BinaryOp::Add => write!(f, "+"),
+            BinaryOp::Sub => write!(f, "-"),
+            BinaryOp::Mul => write!(f, "*"),
+            BinaryOp::Div => write!(f, "/"),
+            BinaryOp::Lt => write!(f, "<"),
+            BinaryOp::Gt => write!(f, ">"),
+            BinaryOp::Lte => write!(f, "<="),
+            BinaryOp::Gte => write!(f, ">="),
+            BinaryOp::Eq => write!(f, "=="),
+            BinaryOp::Neq => write!(f, "!="),
+            BinaryOp::Concat => write!(f, "++"),
+            BinaryOp::BitAnd => write!(f, "&"),
+            BinaryOp::BitOr => write!(f, "|"),
+            BinaryOp::And => write!(f, "&&"),
+            BinaryOp::Or => write!(f, "||"),
+        }
+    }
+}
 
 pub struct Identifier<'a> {
     pub name: &'a str,

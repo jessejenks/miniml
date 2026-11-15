@@ -74,8 +74,19 @@ fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) 
         surface::ExprKind::Unary(op, expr) => {
             ast::ExprKind::Unary(op, Box::new(surface_to_core_inner(scope, *expr)))
         }
+        surface::ExprKind::Binary(surface::BinaryOp::Neq, left, right) => ast::ExprKind::Unary(
+            ast::UnaryOp::Not,
+            Box::new(ast::Expr {
+                kind: ast::ExprKind::Binary(
+                    ast::BinaryOp::Eq,
+                    Box::new(surface_to_core_inner(scope, *left)),
+                    Box::new(surface_to_core_inner(scope, *right)),
+                ),
+                span: expr.span,
+            }),
+        ),
         surface::ExprKind::Binary(op, left, right) => ast::ExprKind::Binary(
-            op,
+            surface_to_core_binop(op),
             Box::new(surface_to_core_inner(scope, *left)),
             Box::new(surface_to_core_inner(scope, *right)),
         ),
@@ -97,6 +108,26 @@ fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) 
     ast::Expr {
         kind,
         span: expr.span,
+    }
+}
+
+fn surface_to_core_binop(op: surface::BinaryOp) -> ast::BinaryOp {
+    match op {
+        surface::BinaryOp::Add => ast::BinaryOp::Add,
+        surface::BinaryOp::Sub => ast::BinaryOp::Sub,
+        surface::BinaryOp::Mul => ast::BinaryOp::Mul,
+        surface::BinaryOp::Div => ast::BinaryOp::Div,
+        surface::BinaryOp::Lt => ast::BinaryOp::Lt,
+        surface::BinaryOp::Gt => ast::BinaryOp::Gt,
+        surface::BinaryOp::Lte => ast::BinaryOp::Lte,
+        surface::BinaryOp::Gte => ast::BinaryOp::Gte,
+        surface::BinaryOp::Eq => ast::BinaryOp::Eq,
+        surface::BinaryOp::Concat => ast::BinaryOp::Concat,
+        surface::BinaryOp::BitAnd => ast::BinaryOp::BitAnd,
+        surface::BinaryOp::BitOr => ast::BinaryOp::BitOr,
+        surface::BinaryOp::And => ast::BinaryOp::And,
+        surface::BinaryOp::Or => ast::BinaryOp::Or,
+        surface::BinaryOp::Neq => unreachable!("!= handled separately"),
     }
 }
 
@@ -127,5 +158,6 @@ mod tests {
         assert_eq!(elab("fun x => fun _ => x").to_string(), "(λ.(λ.#1))");
         assert_eq!(elab("let _ = 1; _").to_string(), "(let 1 in _)");
         assert_eq!(elab("a; b").to_string(), "((λ.b) a)");
+        assert_eq!(elab("a != b").to_string(), "(! (== a b))");
     }
 }
