@@ -1,0 +1,288 @@
+use inkwell::{IntPredicate, module::Linkage, values::IntValue};
+
+use super::{Compiler, Result};
+use crate::ast;
+
+impl<'ctx> Compiler<'ctx> {
+    pub(super) fn compile_expression(&mut self, expr: &ast::Expr) -> Result<IntValue<'ctx>> {
+        match &expr.kind {
+            ast::ExprKind::Unit
+            | ast::ExprKind::Bool(_)
+            | ast::ExprKind::Char(_)
+            | ast::ExprKind::Int(_)
+            | ast::ExprKind::String(_)
+            | ast::ExprKind::Unary(..)
+            | ast::ExprKind::Binary(..) => self.compile_primitive(expr),
+            ast::ExprKind::BoundVariable(n) => self.access(*n),
+            ast::ExprKind::FreeVariable(name) => self.free_variable(name, expr.span),
+            ast::ExprKind::Application(left, right) => {
+                self.pushmark()?;
+                let arg = self.compile_expression(right)?;
+                self.push(arg)?;
+                let mut spine = left;
+                while let ast::ExprKind::Application(left, right) = &spine.kind {
+                    let arg = self.compile_expression(right)?;
+                    self.push(arg)?;
+                    spine = left;
+                }
+                let closure = self.compile_expression(spine)?;
+                self.apply(closure)
+            }
+            ast::ExprKind::Abstraction(_, body) => {
+                let (func, block, env) = self.begin_function()?;
+                self.compile_expression_tail(body)?;
+                self.end_function(block, env);
+                self.cur(func)
+            }
+            ast::ExprKind::LetIn(false, _, expr, body) => {
+                let value = self.compile_expression(expr)?;
+                self.let_in(value)?;
+                let result = self.compile_expression(body)?;
+                self.end_let()?;
+                Ok(result)
+            }
+            ast::ExprKind::LetIn(true, _, expr, body) => {
+                self.dummy()?;
+                let value = self.compile_expression(expr)?;
+                self.update(value)?;
+                let result = self.compile_expression(body)?;
+                self.end_let()?;
+                Ok(result)
+            }
+            ast::ExprKind::IfElse(condition, consequence, alternative) => {
+                let condition = self.compile_expression(condition)?;
+                let (then_block, else_block) = self.branch_on_bool(condition, "if")?;
+
+                self.builder.position_at_end(then_block);
+                let then_value = self.compile_expression(consequence)?;
+                let then_end = self.insert_block();
+
+                self.builder.position_at_end(else_block);
+                let else_value = self.compile_expression(alternative)?;
+                let else_end = self.insert_block();
+
+                self.merge("if", [(then_value, then_end), (else_value, else_end)])
+            }
+        }
+    }
+
+    fn compile_expression_tail(&mut self, expr: &ast::Expr) -> Result<()> {
+        match &expr.kind {
+            ast::ExprKind::Unit
+            | ast::ExprKind::Bool(_)
+            | ast::ExprKind::Char(_)
+            | ast::ExprKind::Int(_)
+            | ast::ExprKind::String(_)
+            | ast::ExprKind::Unary(..)
+            | ast::ExprKind::Binary(..)
+            | ast::ExprKind::BoundVariable(_)
+            | ast::ExprKind::FreeVariable(_) => {
+                let value = self.compile_expression(expr)?;
+                self.ret(value)
+            }
+            ast::ExprKind::Application(left, right) => {
+                let arg = self.compile_expression(right)?;
+                self.push(arg)?;
+                let mut spine = left;
+                while let ast::ExprKind::Application(left, right) = &spine.kind {
+                    let arg = self.compile_expression(right)?;
+                    self.push(arg)?;
+                    spine = left;
+                }
+                let closure = self.compile_expression(spine)?;
+                self.appterm(closure)
+            }
+            ast::ExprKind::Abstraction(_, body) => {
+                let (func, block, env) = self.begin_function()?;
+                self.compile_expression_tail(body)?;
+                self.end_function(block, env);
+                self.grab(func)
+            }
+            ast::ExprKind::LetIn(false, _, expr, body) => {
+                let value = self.compile_expression(expr)?;
+                self.let_in(value)?;
+                self.compile_expression_tail(body)
+            }
+            ast::ExprKind::LetIn(true, _, expr, body) => {
+                self.dummy()?;
+                let value = self.compile_expression(expr)?;
+                self.update(value)?;
+                self.compile_expression_tail(body)
+            }
+            // no merge block for tail
+            ast::ExprKind::IfElse(condition, consequence, alternative) => {
+                let condition = self.compile_expression(condition)?;
+                let (then_block, else_block) = self.branch_on_bool(condition, "if")?;
+                self.builder.position_at_end(then_block);
+                self.compile_expression_tail(consequence)?;
+                self.builder.position_at_end(else_block);
+                self.compile_expression_tail(alternative)
+            }
+        }
+    }
+
+    fn compile_primitive(&mut self, expr: &ast::Expr) -> Result<IntValue<'ctx>> {
+        match &expr.kind {
+            ast::ExprKind::Unit => self.box_const(0),
+            ast::ExprKind::Bool(b) => self.box_const(i64::from(*b)),
+            ast::ExprKind::Char(c) => self.box_const(*c as i64),
+            ast::ExprKind::Int(n) => self.box_const(*n),
+            ast::ExprKind::String(s) => {
+                // OCaml / Damien Doligez string encoding
+                // jessejenks.github.io/blog/ocaml-strings
+                let len = s.len();
+                let words = len / 8 + 1;
+                let mut bytes = s.as_bytes().to_vec();
+                // null padding
+                bytes.resize(8 * words - 1, 0);
+                // last byte
+                let r = 8 * words - len;
+                bytes.push(u8::try_from(r - 1).unwrap());
+                let header = self.word.const_int(((words as u64) << 10) | 0xFC, false);
+                let data = self.context.const_string(&bytes, false);
+                let value = self
+                    .context
+                    .const_struct(&[header.into(), data.into()], false);
+
+                let global = self.module.add_global(value.get_type(), None, "str");
+                global.set_initializer(&value);
+                global.set_constant(true);
+                global.set_linkage(Linkage::Private);
+                global.set_alignment(8);
+
+                // point to data, not header
+                let ptr = self.builder.build_struct_gep(
+                    value.get_type(),
+                    global.as_pointer_value(),
+                    1,
+                    "str.ptr",
+                )?;
+                Ok(self.builder.build_ptr_to_int(ptr, self.word, "str.word")?)
+            }
+            ast::ExprKind::Unary(op, expr) => {
+                let value = self.compile_expression(expr)?;
+                let value = self.unbox_int(value)?;
+                let result = match op {
+                    ast::UnaryOp::Negate => self.builder.build_int_neg(value, "neg")?,
+                    ast::UnaryOp::BitNot => self.builder.build_not(value, "bitnot")?,
+                    ast::UnaryOp::Not => {
+                        self.compare(IntPredicate::EQ, value, self.word.const_zero())?
+                    }
+                };
+                self.box_int(result)
+            }
+            ast::ExprKind::Binary(ast::BinaryOp::Concat, left, right) => {
+                let l = self.compile_expression(left)?;
+                let r = self.compile_expression(right)?;
+                Ok(self
+                    .builder
+                    .build_direct_call(self.miniml_string_concat, &[l.into(), r.into()], "concat")?
+                    .try_as_basic_value()
+                    .expect_basic("miniml_string_concat returns a value")
+                    .into_int_value())
+            }
+            ast::ExprKind::Binary(ast::BinaryOp::Eq, left, right) => {
+                let l = self.compile_expression(left)?;
+                let r = self.compile_expression(right)?;
+                let eq = if Self::is_immediate(left) || Self::is_immediate(right) {
+                    self.compare(IntPredicate::EQ, l, r)?
+                } else {
+                    self.builder
+                        .build_direct_call(self.miniml_equal, &[l.into(), r.into()], "eq")?
+                        .try_as_basic_value()
+                        .expect_basic("miniml_equal returns a value")
+                        .into_int_value()
+                };
+                self.box_int(eq)
+            }
+            ast::ExprKind::Binary(op @ (ast::BinaryOp::And | ast::BinaryOp::Or), left, right) => {
+                self.compile_short_circuit(*op, left, right)
+            }
+            ast::ExprKind::Binary(op, left, right) => {
+                let l = self.compile_expression(left)?;
+                let l = self.unbox_int(l)?;
+                let r = self.compile_expression(right)?;
+                let r = self.unbox_int(r)?;
+                let b = &self.builder;
+                let result = match op {
+                    ast::BinaryOp::Add => b.build_int_add(l, r, "add")?,
+                    ast::BinaryOp::Sub => b.build_int_sub(l, r, "sub")?,
+                    ast::BinaryOp::Mul => b.build_int_mul(l, r, "mul")?,
+                    ast::BinaryOp::Div => b.build_int_signed_div(l, r, "div")?,
+                    ast::BinaryOp::Lt => self.compare(IntPredicate::SLT, l, r)?,
+                    ast::BinaryOp::Gt => self.compare(IntPredicate::SGT, l, r)?,
+                    ast::BinaryOp::Lte => self.compare(IntPredicate::SLE, l, r)?,
+                    ast::BinaryOp::Gte => self.compare(IntPredicate::SGE, l, r)?,
+                    ast::BinaryOp::BitAnd => b.build_and(l, r, "and")?,
+                    ast::BinaryOp::BitOr => b.build_or(l, r, "or")?,
+                    ast::BinaryOp::And | ast::BinaryOp::Or => unreachable!("short-circuits"),
+                    ast::BinaryOp::Eq => unreachable!("equality comparison"),
+                    ast::BinaryOp::Concat => unreachable!("string concatenation"),
+                };
+                self.box_int(result)
+            }
+            _ => unreachable!("not a primitive: {expr}"),
+        }
+    }
+
+    fn compile_short_circuit(
+        &mut self,
+        op: ast::BinaryOp,
+        left: &ast::Expr,
+        right: &ast::Expr,
+    ) -> Result<IntValue<'ctx>> {
+        let l = self.compile_expression(left)?;
+        let name = if op == ast::BinaryOp::And {
+            "and"
+        } else {
+            "or"
+        };
+        let (then_block, else_block) = self.branch_on_bool(l, name)?;
+        let (right_block, short_block) = if op == ast::BinaryOp::And {
+            (then_block, else_block)
+        } else {
+            (else_block, then_block)
+        };
+
+        self.builder.position_at_end(right_block);
+        let r = self.compile_expression(right)?;
+        let right_end = self.insert_block();
+
+        self.merge(name, [(l, short_block), (r, right_end)])
+    }
+
+    fn compare(
+        &self,
+        predicate: IntPredicate,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+    ) -> Result<IntValue<'ctx>> {
+        let bit = self.builder.build_int_compare(predicate, l, r, "cmp")?;
+        Ok(self.builder.build_int_z_extend(bit, self.word, "bool")?)
+    }
+
+    pub(super) fn box_const(&self, n: i64) -> Result<IntValue<'ctx>> {
+        self.box_int(self.word.const_int(n.cast_unsigned(), false))
+    }
+
+    fn box_int(&self, n: IntValue<'ctx>) -> Result<IntValue<'ctx>> {
+        let one = self.word.const_int(1, false);
+        let shifted = self.builder.build_left_shift(n, one, "shl")?;
+        Ok(self.builder.build_or(shifted, one, "boxed")?)
+    }
+
+    pub(super) fn unbox_int(&self, v: IntValue<'ctx>) -> Result<IntValue<'ctx>> {
+        let one = self.word.const_int(1, false);
+        Ok(self.builder.build_right_shift(v, one, true, "unboxed")?)
+    }
+
+    fn is_immediate(e: &ast::Expr) -> bool {
+        matches!(
+            e.kind,
+            ast::ExprKind::Unit
+                | ast::ExprKind::Bool(_)
+                | ast::ExprKind::Char(_)
+                | ast::ExprKind::Int(_)
+        )
+    }
+}
