@@ -19,7 +19,8 @@ pub enum BinaryOp {
     BitOr,
     And,
     Or,
-    Pipe,
+    ForwardPipe,
+    BackwardPipe,
 }
 
 impl Display for BinaryOp {
@@ -40,7 +41,8 @@ impl Display for BinaryOp {
             BinaryOp::BitOr => write!(f, "|"),
             BinaryOp::And => write!(f, "&&"),
             BinaryOp::Or => write!(f, "||"),
-            BinaryOp::Pipe => write!(f, "|>"),
+            BinaryOp::ForwardPipe => write!(f, "|>"),
+            BinaryOp::BackwardPipe => write!(f, "<|"),
         }
     }
 }

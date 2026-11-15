@@ -146,6 +146,7 @@ pub enum Token<'a> {
     PipeGT,
     Lt,
     LtLt,
+    LtPipe,
     Lte,
     Gt,
     GtGt,
@@ -276,6 +277,10 @@ impl<'a> Iterator for Lexer<'a> {
                 Some('<') => {
                     self.chars.next();
                     Token::LtLt
+                }
+                Some('|') => {
+                    self.chars.next();
+                    Token::LtPipe
                 }
                 Some('=') => {
                     self.chars.next();

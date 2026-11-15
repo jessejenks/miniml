@@ -43,12 +43,26 @@ pub enum ParseError {
         span: SourceSpan,
     },
 
-    #[error("cannot chain non-associative operator {tok}")]
+    #[error("cannot chain non-associative operator {first_op}")]
     #[diagnostic(code(parser::chain_non_associative_operator))]
     ChainNonAssociativeOp {
-        tok: String,
+        first_op: String,
         #[label("this operator is non-associative")]
-        span: SourceSpan,
+        first_span: SourceSpan,
+        second_op: String,
+        #[label("followed by this")]
+        second_span: SourceSpan,
+    },
+
+    #[error("cannot mix {first_op} and {second_op} without parentheses")]
+    #[diagnostic(code(parser::mixed_pipe_operators))]
+    MixedPipeOperators {
+        first_op: String,
+        #[label("this pipe")]
+        first_span: SourceSpan,
+        second_op: String,
+        #[label("and this pipe")]
+        second_span: SourceSpan,
     },
 }
 
@@ -73,7 +87,8 @@ fn token_to_binary_op(tok: &Token) -> Option<BinaryOp> {
         Token::Pipe => Some(BinaryOp::BitOr),
         Token::AmpAmp => Some(BinaryOp::And),
         Token::PipePipe => Some(BinaryOp::Or),
-        Token::PipeGT => Some(BinaryOp::Pipe),
+        Token::PipeGT => Some(BinaryOp::ForwardPipe),
+        Token::LtPipe => Some(BinaryOp::BackwardPipe),
         _ => None,
     }
 }
@@ -201,7 +216,7 @@ impl<'a> Parser<'a> {
 
         let mut left = self.atom(tok, start, end)?;
 
-        while let Some((_, tok, _)) = self.peek()? {
+        while let Some((tok_start, tok, tok_end)) = self.peek()? {
             if Self::starts_atom(&tok) {
                 if APPLICATION_LBP <= min_bp || self.just_closed_block() {
                     return Ok(left);
@@ -243,8 +258,34 @@ impl<'a> Parser<'a> {
                 )
             {
                 return Err(ParseError::ChainNonAssociativeOp {
-                    tok: format!("{peek:?}"),
-                    span: (peek_start..peek_end).into(),
+                    first_op: format!("{op}"),
+                    first_span: (tok_start..tok_end).into(),
+                    second_op: format!("{peek_op}"),
+                    second_span: (peek_start..peek_end).into(),
+                });
+            }
+            if op == BinaryOp::ForwardPipe
+                && let Some((peek_start, peek, peek_end)) = self.peek()?
+                && peek == Token::LtPipe
+            {
+                let peek_op = token_to_binary_op(&peek).expect("<| should map to op");
+                return Err(ParseError::MixedPipeOperators {
+                    first_op: format!("{op}"),
+                    first_span: (tok_start..tok_end).into(),
+                    second_op: format!("{peek_op}"),
+                    second_span: (peek_start..peek_end).into(),
+                });
+            }
+            if op == BinaryOp::BackwardPipe
+                && let Some((peek_start, peek, peek_end)) = self.peek()?
+                && peek == Token::PipeGT
+            {
+                let peek_op = token_to_binary_op(&peek).expect("|> should map to op");
+                return Err(ParseError::MixedPipeOperators {
+                    first_op: format!("{op}"),
+                    first_span: (tok_start..tok_end).into(),
+                    second_op: format!("{peek_op}"),
+                    second_span: (peek_start..peek_end).into(),
                 });
             }
         }
@@ -389,7 +430,8 @@ impl<'a> Parser<'a> {
 
     fn infix_binding_power(op: BinaryOp) -> (u8, u8, bool) {
         match op {
-            BinaryOp::Pipe => (1, 2, true),
+            BinaryOp::ForwardPipe => (1, 2, true),
+            BinaryOp::BackwardPipe => (2, 1, true),
             BinaryOp::Or => (3, 4, true),
             BinaryOp::And => (5, 6, true),
             BinaryOp::Lt
@@ -668,18 +710,58 @@ mod tests {
 
     #[test]
     fn chained_non_associative_ops() {
-        for (source, tok, span) in [
-            ("a < b < c", "Lt", 6..7),
-            ("a < b > c", "Gt", 6..7),
-            ("a == b <= c", "Lte", 7..9),
+        for (source, first, first_span, second, second_span) in [
+            ("a < b < c", "<", 2..3, "<", 6..7),
+            ("a < b > c", "<", 2..3, ">", 6..7),
+            ("a == b <= c", "==", 2..4, "<=", 7..9),
         ] {
             let err = parse_err(source);
-            let ParseError::ChainNonAssociativeOp { tok: t, span: s } = err else {
+            let ParseError::ChainNonAssociativeOp {
+                first_op: f,
+                first_span: fs,
+                second_op: s,
+                second_span: ss,
+            } = err
+            else {
                 panic!("wrong error for {source:?}: {err:?}");
             };
             assert_eq!(
-                (t.as_str(), s),
-                (tok, SourceSpan::from(span)),
+                (f.as_str(), fs),
+                (first, SourceSpan::from(first_span)),
+                "for {source:?}"
+            );
+            assert_eq!(
+                (s.as_str(), ss),
+                (second, SourceSpan::from(second_span)),
+                "for {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detects_mixed_pips() {
+        for (source, first, first_span, second, second_span) in [
+            ("x |> f <| ", "|>", 2..4, "<|", 7..9),
+            ("f <| x |> g ", "<|", 2..4, "|>", 7..9),
+        ] {
+            let err = parse_err(source);
+            let ParseError::MixedPipeOperators {
+                first_op: f,
+                first_span: fs,
+                second_op: s,
+                second_span: ss,
+            } = err
+            else {
+                panic!("wrong error for {source:?}: {err:?}");
+            };
+            assert_eq!(
+                (f.as_str(), fs),
+                (first, SourceSpan::from(first_span)),
+                "for {source:?}"
+            );
+            assert_eq!(
+                (s.as_str(), ss),
+                (second, SourceSpan::from(second_span)),
                 "for {source:?}"
             );
         }

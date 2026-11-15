@@ -85,10 +85,16 @@ fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) 
                 span: expr.span,
             }),
         ),
-        surface::ExprKind::Binary(surface::BinaryOp::Pipe, left, right) => {
+        surface::ExprKind::Binary(surface::BinaryOp::ForwardPipe, left, right) => {
             ast::ExprKind::Application(
                 Box::new(surface_to_core_inner(scope, *right)),
                 Box::new(surface_to_core_inner(scope, *left)),
+            )
+        }
+        surface::ExprKind::Binary(surface::BinaryOp::BackwardPipe, left, right) => {
+            ast::ExprKind::Application(
+                Box::new(surface_to_core_inner(scope, *left)),
+                Box::new(surface_to_core_inner(scope, *right)),
             )
         }
         surface::ExprKind::Binary(op, left, right) => ast::ExprKind::Binary(
@@ -133,7 +139,11 @@ fn surface_to_core_binop(op: surface::BinaryOp) -> ast::BinaryOp {
         surface::BinaryOp::BitOr => ast::BinaryOp::BitOr,
         surface::BinaryOp::And => ast::BinaryOp::And,
         surface::BinaryOp::Or => ast::BinaryOp::Or,
-        surface::BinaryOp::Neq | surface::BinaryOp::Pipe => unreachable!("!= handled separately"),
+        surface::BinaryOp::Neq
+        | surface::BinaryOp::ForwardPipe
+        | surface::BinaryOp::BackwardPipe => {
+            unreachable!("!= handled separately")
+        }
     }
 }
 
