@@ -19,6 +19,7 @@ pub enum BinaryOp {
     BitOr,
     And,
     Or,
+    Pipe,
 }
 
 impl Display for BinaryOp {
@@ -39,6 +40,7 @@ impl Display for BinaryOp {
             BinaryOp::BitOr => write!(f, "|"),
             BinaryOp::And => write!(f, "&&"),
             BinaryOp::Or => write!(f, "||"),
+            BinaryOp::Pipe => write!(f, "|>"),
         }
     }
 }

@@ -52,9 +52,9 @@ pub enum ParseError {
     },
 }
 
-const PREFIX_RBP: u8 = 11;
-const APPLICATION_LBP: u8 = 13;
-const APPLICATION_RBP: u8 = 14;
+const PREFIX_RBP: u8 = 13;
+const APPLICATION_LBP: u8 = 15;
+const APPLICATION_RBP: u8 = 16;
 
 fn token_to_binary_op(tok: &Token) -> Option<BinaryOp> {
     match tok {
@@ -73,6 +73,7 @@ fn token_to_binary_op(tok: &Token) -> Option<BinaryOp> {
         Token::Pipe => Some(BinaryOp::BitOr),
         Token::AmpAmp => Some(BinaryOp::And),
         Token::PipePipe => Some(BinaryOp::Or),
+        Token::PipeGT => Some(BinaryOp::Pipe),
         _ => None,
     }
 }
@@ -388,17 +389,18 @@ impl<'a> Parser<'a> {
 
     fn infix_binding_power(op: BinaryOp) -> (u8, u8, bool) {
         match op {
-            BinaryOp::Or => (1, 2, true),
-            BinaryOp::And => (3, 4, true),
+            BinaryOp::Pipe => (1, 2, true),
+            BinaryOp::Or => (3, 4, true),
+            BinaryOp::And => (5, 6, true),
             BinaryOp::Lt
             | BinaryOp::Gt
             | BinaryOp::Lte
             | BinaryOp::Gte
             | BinaryOp::Eq
-            | BinaryOp::Neq => (5, 6, false),
-            BinaryOp::Concat => (8, 7, true),
-            BinaryOp::Add | BinaryOp::Sub | BinaryOp::BitOr => (9, 10, true),
-            BinaryOp::Mul | BinaryOp::Div | BinaryOp::BitAnd => (11, 12, true),
+            | BinaryOp::Neq => (7, 8, false),
+            BinaryOp::Concat => (10, 9, true),
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::BitOr => (11, 12, true),
+            BinaryOp::Mul | BinaryOp::Div | BinaryOp::BitAnd => (13, 14, true),
         }
     }
 

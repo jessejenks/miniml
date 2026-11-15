@@ -85,6 +85,12 @@ fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) 
                 span: expr.span,
             }),
         ),
+        surface::ExprKind::Binary(surface::BinaryOp::Pipe, left, right) => {
+            ast::ExprKind::Application(
+                Box::new(surface_to_core_inner(scope, *right)),
+                Box::new(surface_to_core_inner(scope, *left)),
+            )
+        }
         surface::ExprKind::Binary(op, left, right) => ast::ExprKind::Binary(
             surface_to_core_binop(op),
             Box::new(surface_to_core_inner(scope, *left)),
@@ -127,7 +133,7 @@ fn surface_to_core_binop(op: surface::BinaryOp) -> ast::BinaryOp {
         surface::BinaryOp::BitOr => ast::BinaryOp::BitOr,
         surface::BinaryOp::And => ast::BinaryOp::And,
         surface::BinaryOp::Or => ast::BinaryOp::Or,
-        surface::BinaryOp::Neq => unreachable!("!= handled separately"),
+        surface::BinaryOp::Neq | surface::BinaryOp::Pipe => unreachable!("!= handled separately"),
     }
 }
 
@@ -159,5 +165,14 @@ mod tests {
         assert_eq!(elab("let _ = 1; _").to_string(), "(let 1 in _)");
         assert_eq!(elab("a; b").to_string(), "((λ.b) a)");
         assert_eq!(elab("a != b").to_string(), "(! (== a b))");
+        assert_eq!(elab("x |> f").to_string(), "(f x)");
+        assert_eq!(elab("n + 1 |> f").to_string(), "(f (+ n 1))");
+        assert_eq!(elab("a || b |> f").to_string(), "(f (|| a b))");
+        assert_eq!(elab("x |> y; f").to_string(), "((λ.f) (y x))");
+        assert_eq!(elab("x |> { y; f }").to_string(), "(((λ.f) y) x)");
+        assert_eq!(
+            elab("a || b |> fun x => if x then 1 else 2").to_string(),
+            "((λ.(if #0 then 1 else 2)) (|| a b))"
+        );
     }
 }

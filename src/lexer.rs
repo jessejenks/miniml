@@ -143,6 +143,7 @@ pub enum Token<'a> {
     AmpAmp,
     Pipe,
     PipePipe,
+    PipeGT,
     Lt,
     LtLt,
     Lte,
@@ -260,14 +261,17 @@ impl<'a> Iterator for Lexer<'a> {
                     Token::Amp
                 }
             }
-            '|' => {
-                if self.peek_char() == Some('|') {
+            '|' => match self.peek_char() {
+                Some('|') => {
                     self.chars.next();
                     Token::PipePipe
-                } else {
-                    Token::Pipe
                 }
-            }
+                Some('>') => {
+                    self.chars.next();
+                    Token::PipeGT
+                }
+                _ => Token::Pipe,
+            },
             '<' => match self.peek_char() {
                 Some('<') => {
                     self.chars.next();
