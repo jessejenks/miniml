@@ -123,7 +123,6 @@ impl Scheme {
 #[derive(Debug, Error, Diagnostic)]
 pub enum TypeError {
     #[error("unbound variable `{name}`")]
-    #[diagnostic(code(typecheck::unbound_variable), help("the only builtin is `print`"))]
     UnboundVariable {
         name: String,
         #[label("not defined")]

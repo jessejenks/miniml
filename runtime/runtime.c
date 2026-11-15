@@ -429,6 +429,16 @@ static uint64_t string_length(uint64_t *s) {
     return bytes - 1 - ((uint8_t *)s)[bytes - 1];
 }
 
+uint64_t miniml_len(uint64_t w) {
+    return (string_length((uint64_t *)w) << 1) | 1; // box
+}
+
+static void pad_string(char *dst, uint64_t len, uint64_t words) {
+    uint64_t k = words * 8 - 1 - len;
+    memset(dst + len, 0, k);
+    dst[words * 8 - 1] = (char)k;
+}
+
 uint64_t miniml_string_concat(uint64_t left, uint64_t right) {
     uint64_t len_l = string_length((uint64_t *)left);
     uint64_t len_r = string_length((uint64_t *)right);
@@ -438,33 +448,71 @@ uint64_t miniml_string_concat(uint64_t left, uint64_t right) {
     char *dst = (char *)p;
     memcpy(dst, (char *)left, len_l);
     memcpy(dst + len_l, (char *)right, len_r);
-    uint64_t k = words * 8 - 1 - len;
-    memset(dst + len, 0, k);
-    dst[words * 8 - 1] = k;
+    pad_string(dst, len, words);
     return (uint64_t)p;
+}
+
+static uint64_t make_string(const char *bytes, uint64_t len) {
+    uint64_t words = len / 8 + 1;
+    char *dst = miniml_alloc(words, STRING_TAG);
+    memcpy(dst, bytes, len);
+    pad_string(dst, len, words);
+    return (uint64_t)dst;
+}
+
+uint64_t miniml_unit_to_str() {
+    // make global?
+    return make_string("()", 2);
+}
+
+uint64_t miniml_bool_to_str(uint64_t w) {
+    // make globals?
+    if (w >> 1) return make_string("true", 4);
+    else return make_string("false", 5);
+}
+
+static int encode_char(uint64_t c, char *buf) {
+    if (c < 0x80) {
+        buf[0] = (char)c;
+        return 1;
+    }
+    if (c < 0x800) {
+        // 110xxxxx 10xxxxxx
+        buf[0] = (char)(0xC0 | (c >> 6));
+        buf[1] = (char)(0x80 | (c & 0x3F));
+        return 2;
+    }
+    if (c < 0x10000) {
+        // 1110xxxx 10xxxxxx 10xxxxxx
+        buf[0] = (char)(0xE0 | (c >> 12));
+        buf[1] = (char)(0x80 | ((c >> 6) & 0x3F));
+        buf[2] = (char)(0x80 | (c & 0x3F));
+        return 3;
+    }
+    // 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+    buf[0] = (char)(0xF0 | (c >> 18));
+    buf[1] = (char)(0x80 | ((c >> 12) & 0x3F));
+    buf[2] = (char)(0x80 | ((c >> 6) & 0x3F));
+    buf[3] = (char)(0x80 | (c & 0x3F));
+    return 4;
+}
+
+uint64_t miniml_char_to_str(uint64_t w) {
+    char buf[4];
+    int len = encode_char(w >> 1, buf);
+    return make_string(buf, len);
 }
 
 void miniml_print_char(uint64_t c) {
     char buf[5] = {0};
-    if (c < 0x80) {
-        buf[0] = c;
-    } else if (c < 0x800) {
-        // 110xxxxx 10xxxxxx
-        buf[0] = 0xC0 | (c >> 6);
-        buf[1] = 0x80 | (c & 0x3F);
-    } else if (c < 0x10000) {
-        // 1110xxxx 10xxxxxx 10xxxxxx
-        buf[0] = 0xE0 | (c >> 12);
-        buf[1] = 0x80 | ((c >> 6) & 0x3F);
-        buf[2] = 0x80 | (c & 0x3F);
-    } else {
-        // 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
-        buf[0] = 0xF0 | (c >> 18);
-        buf[1] = 0x80 | ((c >> 12) & 0x3F);
-        buf[2] = 0x80 | ((c >> 6) & 0x3F);
-        buf[3] = 0x80 | (c & 0x3F);
-    }
+    encode_char(c, buf);
     fputs(buf, stdout);
+}
+
+uint64_t miniml_int_to_str(uint64_t w) {
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%lld", (long long)((int64_t)w >> 1));
+    return make_string(buf, len);
 }
 
 int64_t miniml_run(int64_t (*entry)(void)) {

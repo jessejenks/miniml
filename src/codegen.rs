@@ -27,7 +27,6 @@ pub enum CodegenError {
     #[diagnostic(code(codegen::llvm))]
     Builder(#[from] BuilderError),
     #[error("unknown variable `{name}`")]
-    #[diagnostic(code(codegen::unknown_variable), help("the only builtin is `print`"))]
     UnknownVariable {
         name: String,
         #[label("not defined")]
@@ -75,10 +74,20 @@ pub struct Compiler<'ctx> {
     miniml_equal: FunctionValue<'ctx>,
     miniml_string_concat: FunctionValue<'ctx>,
     miniml_print_char: FunctionValue<'ctx>,
+    miniml_len: FunctionValue<'ctx>,
+    miniml_unit_to_str: FunctionValue<'ctx>,
+    miniml_bool_to_str: FunctionValue<'ctx>,
+    miniml_char_to_str: FunctionValue<'ctx>,
+    miniml_int_to_str: FunctionValue<'ctx>,
     cons_fn: FunctionValue<'ctx>,
     closure_fn: FunctionValue<'ctx>,
     printf: FunctionValue<'ctx>,
-    print_fn: FunctionValue<'ctx>,
+    builtin_print: FunctionValue<'ctx>,
+    builtin_len: FunctionValue<'ctx>,
+    builtin_unit_to_str: FunctionValue<'ctx>,
+    builtin_bool_to_str: FunctionValue<'ctx>,
+    builtin_char_to_str: FunctionValue<'ctx>,
+    builtin_int_to_str: FunctionValue<'ctx>,
     word: IntType<'ctx>,
     ptr_type: PointerType<'ctx>,
     list_type: StructType<'ctx>,
@@ -124,6 +133,30 @@ impl<'ctx> Compiler<'ctx> {
             context.void_type().fn_type(&[word.into()], false),
             None,
         );
+        // declare i64 @miniml_len(i64)
+        let miniml_len =
+            module.add_function("miniml_len", word.fn_type(&[word.into()], false), None);
+        // declare i64 @miniml_unit_to_str()
+        let miniml_unit_to_str =
+            module.add_function("miniml_unit_to_str", word.fn_type(&[], false), None);
+        // declare i64 @miniml_bool_to_str(i64)
+        let miniml_bool_to_str = module.add_function(
+            "miniml_bool_to_str",
+            word.fn_type(&[word.into()], false),
+            None,
+        );
+        // declare i64 @miniml_char_to_str(i64)
+        let miniml_char_to_str = module.add_function(
+            "miniml_char_to_str",
+            word.fn_type(&[word.into()], false),
+            None,
+        );
+        // declare i64 @miniml_int_to_str(i64)
+        let miniml_int_to_str = module.add_function(
+            "miniml_int_to_str",
+            word.fn_type(&[word.into()], false),
+            None,
+        );
         // declare i32 @printf(ptr, ...)
         let printf = module.add_function(
             "printf",
@@ -151,9 +184,27 @@ impl<'ctx> Compiler<'ctx> {
 
         let lambda_type = word.fn_type(&[ptr_type.into()], false);
 
-        // The global print function. printf is the libc function
-        let print_fn = module.add_function("print", lambda_type, Some(Linkage::Internal));
-        print_fn.set_call_conventions(TAIL_CC);
+        let builtin_print = module.add_function("print", lambda_type, Some(Linkage::Internal));
+        builtin_print.set_call_conventions(TAIL_CC);
+
+        let builtin_len = module.add_function("len", lambda_type, Some(Linkage::Internal));
+        builtin_len.set_call_conventions(TAIL_CC);
+
+        let builtin_unit_to_str =
+            module.add_function("unit_to_str", lambda_type, Some(Linkage::Internal));
+        builtin_unit_to_str.set_call_conventions(TAIL_CC);
+
+        let builtin_bool_to_str =
+            module.add_function("bool_to_str", lambda_type, Some(Linkage::Internal));
+        builtin_bool_to_str.set_call_conventions(TAIL_CC);
+
+        let builtin_char_to_str =
+            module.add_function("char_to_str", lambda_type, Some(Linkage::Internal));
+        builtin_char_to_str.set_call_conventions(TAIL_CC);
+
+        let builtin_int_to_str =
+            module.add_function("int_to_str", lambda_type, Some(Linkage::Internal));
+        builtin_int_to_str.set_call_conventions(TAIL_CC);
 
         let arg_stack = module.add_global(ptr_type, None, "miniml_args");
 
@@ -167,10 +218,20 @@ impl<'ctx> Compiler<'ctx> {
             miniml_equal,
             miniml_string_concat,
             miniml_print_char,
+            miniml_len,
+            miniml_unit_to_str,
+            miniml_bool_to_str,
+            miniml_char_to_str,
+            miniml_int_to_str,
             cons_fn,
             closure_fn,
             printf,
-            print_fn,
+            builtin_print,
+            builtin_len,
+            builtin_unit_to_str,
+            builtin_bool_to_str,
+            builtin_char_to_str,
+            builtin_int_to_str,
             word,
             ptr_type,
             list_type,
@@ -189,6 +250,11 @@ impl<'ctx> Compiler<'ctx> {
         self.define_cons()?;
         self.define_closure()?;
         self.define_print()?;
+        self.define_builtin(self.builtin_len, self.miniml_len)?;
+        self.define_unit_to_str()?;
+        self.define_builtin(self.builtin_bool_to_str, self.miniml_bool_to_str)?;
+        self.define_builtin(self.builtin_char_to_str, self.miniml_char_to_str)?;
+        self.define_builtin(self.builtin_int_to_str, self.miniml_int_to_str)?;
         Ok(())
     }
 
@@ -272,12 +338,7 @@ impl<'ctx> Compiler<'ctx> {
     /// define internal tailcc i64 @print(ptr %env)
     /// Effectively `fun s => { printf("%s\n", s); () }`
     fn define_print(&mut self) -> Result<()> {
-        let f = self.print_fn;
-        self.builder
-            .position_at_end(self.context.append_basic_block(f, "entry"));
-        let env = f.get_first_param().unwrap().into_pointer_value();
-        env.set_name("env");
-        self.env_slot = Some(self.new_env_slot(env)?);
+        self.begin_builtin(self.builtin_print)?;
 
         let s = self.access(0)?;
         let s = self.builder.build_int_to_ptr(s, self.ptr_type, "str")?;
@@ -292,13 +353,70 @@ impl<'ctx> Compiler<'ctx> {
         let unit = self.box_const(0)?;
         self.ret(unit)?;
 
-        self.env_slot = None;
+        self.end_builtin();
         Ok(())
+    }
+
+    fn define_builtin(
+        &mut self,
+        builtin_func: FunctionValue<'ctx>,
+        runtime_func: FunctionValue<'ctx>,
+    ) -> Result<()> {
+        self.begin_builtin(builtin_func)?;
+
+        let x = self.access(0)?;
+        let r = self.call_runtime_func(runtime_func, &[x.into()])?;
+        self.ret(r)?;
+
+        self.end_builtin();
+        Ok(())
+    }
+
+    fn define_unit_to_str(&mut self) -> Result<()> {
+        self.begin_builtin(self.builtin_unit_to_str)?;
+
+        // runtime function doesn't need an argument
+        let r = self.call_runtime_func(self.miniml_unit_to_str, &[])?;
+        self.ret(r)?;
+
+        self.end_builtin();
+        Ok(())
+    }
+
+    fn begin_builtin(&mut self, f: FunctionValue<'ctx>) -> Result<()> {
+        self.builder
+            .position_at_end(self.context.append_basic_block(f, "entry"));
+        let env = f.get_first_param().unwrap().into_pointer_value();
+        env.set_name("env");
+        self.env_slot = Some(self.new_env_slot(env)?);
+        Ok(())
+    }
+
+    fn end_builtin(&mut self) {
+        self.env_slot = None;
+    }
+
+    fn call_runtime_func(
+        &self,
+        runtime_func: FunctionValue<'ctx>,
+        args: &[BasicMetadataValueEnum<'ctx>],
+    ) -> Result<IntValue<'ctx>> {
+        Ok(self
+            .builder
+            .build_direct_call(runtime_func, args, "r")?
+            .try_as_basic_value()
+            .expect_basic("runtime function returns a value")
+            .into_int_value())
     }
 
     fn free_variable(&self, name: &str, span: ast::Span) -> Result<IntValue<'ctx>> {
         match name {
-            "print" => self.cur(self.print_fn),
+            "print" => self.cur(self.builtin_print),
+            "len" => self.cur(self.builtin_len),
+            "unitToStr" => self.cur(self.builtin_unit_to_str),
+            "boolToStr" => self.cur(self.builtin_bool_to_str),
+            "charToStr" => self.cur(self.builtin_char_to_str),
+            "intToStr" => self.cur(self.builtin_int_to_str),
             _ => Err(CodegenError::UnknownVariable {
                 name: name.to_string(),
                 span: span.into(),
@@ -1135,6 +1253,11 @@ mod tests {
         fn miniml_alloc(words: u64, tag: u64) -> *mut u8;
         fn miniml_equal(left: u64, right: u64) -> u64;
         fn miniml_string_concat(left: u64, right: u64) -> u64;
+        fn miniml_len(s: u64) -> u64;
+        fn miniml_unit_to_str() -> u64;
+        fn miniml_bool_to_str(b: u64) -> u64;
+        fn miniml_char_to_str(c: u64) -> u64;
+        fn miniml_int_to_str(n: u64) -> u64;
     }
 
     static RUNTIME_LOCK: Mutex<()> = Mutex::new(());
@@ -1172,6 +1295,26 @@ mod tests {
         engine.add_global_mapping(
             &module.get_function("miniml_string_concat").unwrap(),
             miniml_string_concat as *const () as usize,
+        );
+        engine.add_global_mapping(
+            &module.get_function("miniml_len").unwrap(),
+            miniml_len as *const () as usize,
+        );
+        engine.add_global_mapping(
+            &module.get_function("miniml_unit_to_str").unwrap(),
+            miniml_unit_to_str as *const () as usize,
+        );
+        engine.add_global_mapping(
+            &module.get_function("miniml_bool_to_str").unwrap(),
+            miniml_bool_to_str as *const () as usize,
+        );
+        engine.add_global_mapping(
+            &module.get_function("miniml_char_to_str").unwrap(),
+            miniml_char_to_str as *const () as usize,
+        );
+        engine.add_global_mapping(
+            &module.get_function("miniml_int_to_str").unwrap(),
+            miniml_int_to_str as *const () as usize,
         );
         let _guard = RUNTIME_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         unsafe {
@@ -1258,6 +1401,15 @@ mod tests {
         agrees("if \"abcdefg\" ++ \"h\" == \"abcdefgh\" then 1 else 2"); // combined string is 8 bytes
         agrees("if \"abc\" ++ \"def\" ++ \"ghi\" == \"abcdefghi\" then 1 else 2");
         agrees("if \"ab\" ++ \"c\" == \"abd\" then 1 else 2");
+        // builtins
+        agrees("if len \"abcd\" == 4 then 1 else 2");
+        agrees("if len \"abcd\" == 5 then 1 else 2");
+        agrees("if unitToStr () == \"()\" then 1 else 2");
+        agrees("if boolToStr true == \"true\" then 1 else 2");
+        agrees("if boolToStr false == \"false\" then 1 else 2");
+        agrees("if charToStr 'a' == \"a\" then 1 else 2");
+        agrees("if charToStr 'ç' == \"ç\" then 1 else 2");
+        agrees("if intToStr 123 == \"123\" then 1 else 2");
     }
 
     #[test]
