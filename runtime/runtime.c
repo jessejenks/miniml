@@ -424,6 +424,26 @@ int64_t miniml_equal(uint64_t left, uint64_t right) {
     return 0;
 }
 
+static uint64_t string_length(uint64_t *s) {
+    uint64_t bytes = header_size(s[-1]) * sizeof(uint64_t);
+    return bytes - 1 - ((uint8_t *)s)[bytes - 1];
+}
+
+uint64_t miniml_string_concat(uint64_t left, uint64_t right) {
+    uint64_t len_l = string_length((uint64_t *)left);
+    uint64_t len_r = string_length((uint64_t *)right);
+    uint64_t len = len_l + len_r;
+    uint64_t words = len / 8 + 1;
+    void *p = miniml_alloc(words, STRING_TAG);
+    char *dst = (char *)p;
+    memcpy(dst, (char *)left, len_l);
+    memcpy(dst + len_l, (char *)right, len_r);
+    uint64_t k = words * 8 - 1 - len;
+    memset(dst + len, 0, k);
+    dst[words * 8 - 1] = k;
+    return (uint64_t)p;
+}
+
 int64_t miniml_run(int64_t (*entry)(void)) {
     volatile uint64_t marker = 0;
     stack_base = (uint64_t *)&marker;

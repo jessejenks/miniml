@@ -73,6 +73,7 @@ pub struct Compiler<'ctx> {
     builder: Builder<'ctx>,
     miniml_alloc: FunctionValue<'ctx>,
     miniml_equal: FunctionValue<'ctx>,
+    miniml_string_concat: FunctionValue<'ctx>,
     cons_fn: FunctionValue<'ctx>,
     closure_fn: FunctionValue<'ctx>,
     printf: FunctionValue<'ctx>,
@@ -107,6 +108,12 @@ impl<'ctx> Compiler<'ctx> {
         // declare i64 @miniml_equal(i64, i64)
         let miniml_equal = module.add_function(
             "miniml_equal",
+            word.fn_type(&[word.into(), word.into()], false),
+            None,
+        );
+        // declare i64 @miniml_string_concat(i64, i64)
+        let miniml_string_concat = module.add_function(
+            "miniml_string_concat",
             word.fn_type(&[word.into(), word.into()], false),
             None,
         );
@@ -151,6 +158,7 @@ impl<'ctx> Compiler<'ctx> {
             builder,
             miniml_alloc,
             miniml_equal,
+            miniml_string_concat,
             cons_fn,
             closure_fn,
             printf,
@@ -982,8 +990,15 @@ impl<'ctx> Compiler<'ctx> {
                 };
                 self.box_int(result)
             }
-            ast::ExprKind::Binary(ast::BinaryOp::Concat, _left, _right) => {
-                todo!()
+            ast::ExprKind::Binary(ast::BinaryOp::Concat, left, right) => {
+                let l = self.compile_expression(left)?;
+                let r = self.compile_expression(right)?;
+                Ok(self
+                    .builder
+                    .build_direct_call(self.miniml_string_concat, &[l.into(), r.into()], "concat")?
+                    .try_as_basic_value()
+                    .expect_basic("miniml_string_concat returns a value")
+                    .into_int_value())
             }
             ast::ExprKind::Binary(ast::BinaryOp::Eq, left, right) => {
                 let l = self.compile_expression(left)?;
@@ -1107,6 +1122,7 @@ mod tests {
         fn miniml_reset();
         fn miniml_alloc(words: u64, tag: u64) -> *mut u8;
         fn miniml_equal(left: u64, right: u64) -> u64;
+        fn miniml_string_concat(left: u64, right: u64) -> u64;
     }
 
     static RUNTIME_LOCK: Mutex<()> = Mutex::new(());
@@ -1140,6 +1156,10 @@ mod tests {
         engine.add_global_mapping(
             &module.get_function("miniml_equal").unwrap(),
             miniml_equal as *const () as usize,
+        );
+        engine.add_global_mapping(
+            &module.get_function("miniml_string_concat").unwrap(),
+            miniml_string_concat as *const () as usize,
         );
         let _guard = RUNTIME_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         unsafe {
@@ -1221,6 +1241,11 @@ mod tests {
         agrees("if 123 == 123 then 1 else 2");
         agrees("if \"abc\" == \"abc\" then 1 else 2");
         agrees("if \"abc\" == \"def\" then 1 else 2");
+        // string concat
+        agrees("if \"\" ++ \"\" == \"\" then 1 else 2");
+        agrees("if \"abcdefg\" ++ \"h\" == \"abcdefgh\" then 1 else 2"); // combined string is 8 bytes
+        agrees("if \"abc\" ++ \"def\" ++ \"ghi\" == \"abcdefghi\" then 1 else 2");
+        agrees("if \"ab\" ++ \"c\" == \"abd\" then 1 else 2");
     }
 
     #[test]
