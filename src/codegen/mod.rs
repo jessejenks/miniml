@@ -5,7 +5,7 @@ use inkwell::{
     module::{Linkage, Module},
     support::LLVMString,
     types::{FunctionType, IntType, PointerType, StructType},
-    values::{BasicMetadataValueEnum, FunctionValue, GlobalValue, PointerValue},
+    values::{BasicMetadataValueEnum, FunctionValue, GlobalValue, IntValue, PointerValue},
 };
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
@@ -46,15 +46,15 @@ impl From<LLVMString> for CodegenError {
 
 type Result<T> = std::result::Result<T, CodegenError>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultKind {
     Unit,
     Bool,
     Char,
     Int,
     String,
-    Tuple,
     Function,
+    Tuple(Vec<ResultKind>),
     /// no return value expected
     Never,
     /// always return the unboxed result as the exit code
@@ -64,6 +64,14 @@ pub enum ResultKind {
 const TAIL_CC: u32 = 18;
 
 const RUNTIME: &str = include_str!("../../runtime/runtime.c");
+
+#[repr(u8)]
+enum Tag {
+    Tuple = 0,
+    Closure = 247,
+    Env = 248,
+    String = 252,
+}
 
 pub struct Compiler<'ctx> {
     context: &'ctx Context,
@@ -273,7 +281,7 @@ impl<'ctx> Compiler<'ctx> {
         Ok(())
     }
 
-    pub fn compile(&mut self, program: &ast::Expr, kind: ResultKind, label: &str) -> Result<()> {
+    pub fn compile(&mut self, program: &ast::Expr, kind: &ResultKind, label: &str) -> Result<()> {
         // define i64 @miniml_main() { entry: ... }
         let main = self
             .module
@@ -283,16 +291,29 @@ impl<'ctx> Compiler<'ctx> {
         self.env_slot = Some(self.new_env_slot(self.ptr_type.const_null())?);
 
         let result = self.compile_expression(program)?;
-        let label = label.replace('%', "%%");
         match kind {
             ResultKind::ExitCode => {
                 let exit_code = self.unbox_int(result)?;
                 self.builder.build_return(Some(&exit_code))?;
                 return Ok(());
             }
-            ResultKind::Unit => self.call_printf(&format!("{label}()\n"), &[])?,
+            ResultKind::Never => {}
+            kind => {
+                self.call_printf(&label.replace('%', "%%"), &[])?;
+                self.print_value(kind, result)?;
+                self.call_printf("\n", &[])?;
+            }
+        }
+
+        self.builder.build_return(Some(&self.word.const_zero()))?;
+        Ok(())
+    }
+
+    fn print_value(&self, kind: &ResultKind, value: IntValue<'ctx>) -> Result<()> {
+        match kind {
+            ResultKind::Unit => self.call_printf("()", &[])?,
             ResultKind::Bool => {
-                let n = self.unbox_int(result)?;
+                let n = self.unbox_int(value)?;
                 let is_true = self.builder.build_int_compare(
                     IntPredicate::NE,
                     n,
@@ -307,33 +328,56 @@ impl<'ctx> Compiler<'ctx> {
                     f.as_pointer_value(),
                     "bool.str",
                 )?;
-                self.call_printf(&format!("{label}%s\n"), &[s.into()])?;
+                self.call_printf("%s", &[s.into()])?;
             }
             ResultKind::Char => {
-                let c = self.unbox_int(result)?;
-                self.call_printf(&format!("{label}'"), &[])?;
+                let c = self.unbox_int(value)?;
+                self.call_printf("'", &[])?;
                 self.builder
                     .build_direct_call(self.miniml_print_char, &[c.into()], "")?;
-                self.call_printf("'\n", &[])?;
+                self.call_printf("'", &[])?;
             }
             ResultKind::Int => {
-                let n = self.unbox_int(result)?;
-                self.call_printf(&format!("{label}%lld\n"), &[n.into()])?;
+                let n = self.unbox_int(value)?;
+                self.call_printf("%lld", &[n.into()])?;
             }
             ResultKind::String => {
-                self.call_printf(&format!("{label}\""), &[])?;
+                self.call_printf("\"", &[])?;
                 self.builder.build_direct_call(
                     self.miniml_print_string_escaped,
-                    &[result.into()],
+                    &[value.into()],
                     "",
                 )?;
-                self.call_printf("\"\n", &[])?;
+                self.call_printf("\"", &[])?;
             }
-            ResultKind::Tuple => todo!(),
-            ResultKind::Function => self.call_printf(&format!("{label}<fun>\n"), &[])?,
-            ResultKind::Never => {}
+            ResultKind::Tuple(kinds) => {
+                let tuple = self
+                    .builder
+                    .build_int_to_ptr(value, self.ptr_type, "tuple")?;
+                self.call_printf("(", &[])?;
+                for (i, kind) in kinds.iter().enumerate() {
+                    if i > 0 {
+                        self.call_printf(", ", &[])?;
+                    }
+                    let field = unsafe {
+                        self.builder.build_gep(
+                            self.word,
+                            tuple,
+                            &[self.word.const_int(i as u64, false)],
+                            "tuple.field",
+                        )?
+                    };
+                    let field = self
+                        .builder
+                        .build_load(self.word, field, "field")?
+                        .into_int_value();
+                    self.print_value(kind, field)?;
+                }
+                self.call_printf(")", &[])?;
+            }
+            ResultKind::Function => self.call_printf("<fun>", &[])?,
+            ResultKind::ExitCode | ResultKind::Never => unreachable!("handled in compile"),
         }
-        self.builder.build_return(Some(&self.word.const_zero()))?;
         Ok(())
     }
 

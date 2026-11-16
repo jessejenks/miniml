@@ -1,7 +1,7 @@
 use inkwell::{IntPredicate, module::Linkage, values::IntValue};
 
 use super::{Compiler, Result};
-use crate::ast;
+use crate::{ast, codegen::Tag};
 
 impl<'ctx> Compiler<'ctx> {
     pub(super) fn compile_expression(&mut self, expr: &ast::Expr) -> Result<IntValue<'ctx>> {
@@ -63,7 +63,7 @@ impl<'ctx> Compiler<'ctx> {
 
                 self.merge("if", [(then_value, then_end), (else_value, else_end)])
             }
-            ast::ExprKind::Tuple(_) => todo!(),
+            ast::ExprKind::Tuple(elements) => self.compile_tuple(elements),
         }
     }
 
@@ -77,7 +77,8 @@ impl<'ctx> Compiler<'ctx> {
             | ast::ExprKind::Unary(..)
             | ast::ExprKind::Binary(..)
             | ast::ExprKind::BoundVariable(_)
-            | ast::ExprKind::FreeVariable(_) => {
+            | ast::ExprKind::FreeVariable(_)
+            | ast::ExprKind::Tuple(_) => {
                 let value = self.compile_expression(expr)?;
                 self.ret(value)
             }
@@ -119,7 +120,6 @@ impl<'ctx> Compiler<'ctx> {
                 self.builder.position_at_end(else_block);
                 self.compile_expression_tail(alternative)
             }
-            ast::ExprKind::Tuple(_) => todo!(),
         }
     }
 
@@ -129,38 +129,7 @@ impl<'ctx> Compiler<'ctx> {
             ast::ExprKind::Bool(b) => self.box_const(i64::from(*b)),
             ast::ExprKind::Char(c) => self.box_const(*c as i64),
             ast::ExprKind::Int(n) => self.box_const(*n),
-            ast::ExprKind::String(s) => {
-                // OCaml / Damien Doligez string encoding
-                // jessejenks.github.io/blog/ocaml-strings
-                let len = s.len();
-                let words = len / 8 + 1;
-                let mut bytes = s.as_bytes().to_vec();
-                // null padding
-                bytes.resize(8 * words - 1, 0);
-                // last byte
-                let r = 8 * words - len;
-                bytes.push(u8::try_from(r - 1).unwrap());
-                let header = self.word.const_int(((words as u64) << 10) | 0xFC, false);
-                let data = self.context.const_string(&bytes, false);
-                let value = self
-                    .context
-                    .const_struct(&[header.into(), data.into()], false);
-
-                let global = self.module.add_global(value.get_type(), None, "str");
-                global.set_initializer(&value);
-                global.set_constant(true);
-                global.set_linkage(Linkage::Private);
-                global.set_alignment(8);
-
-                // point to data, not header
-                let ptr = self.builder.build_struct_gep(
-                    value.get_type(),
-                    global.as_pointer_value(),
-                    1,
-                    "str.ptr",
-                )?;
-                Ok(self.builder.build_ptr_to_int(ptr, self.word, "str.word")?)
-            }
+            ast::ExprKind::String(s) => self.compile_string(s),
             ast::ExprKind::Unary(op, expr) => {
                 let value = self.compile_expression(expr)?;
                 let value = self.unbox_int(value)?;
@@ -225,6 +194,79 @@ impl<'ctx> Compiler<'ctx> {
             }
             _ => unreachable!("not a primitive: {expr}"),
         }
+    }
+
+    fn compile_string(&self, s: &String) -> Result<IntValue<'ctx>> {
+        // OCaml / Damien Doligez string encoding
+        // jessejenks.github.io/blog/ocaml-strings
+        let len = s.len();
+        let words = len / 8 + 1;
+        let mut bytes = s.as_bytes().to_vec();
+        // null padding
+        bytes.resize(8 * words - 1, 0);
+        // last byte
+        let r = 8 * words - len;
+        bytes.push(u8::try_from(r - 1).unwrap());
+        let header = self
+            .word
+            .const_int(((words as u64) << 10) | (Tag::String as u64), false);
+        let data = self.context.const_string(&bytes, false);
+        let value = self
+            .context
+            .const_struct(&[header.into(), data.into()], false);
+
+        let global = self.module.add_global(value.get_type(), None, "str");
+        global.set_initializer(&value);
+        global.set_constant(true);
+        global.set_linkage(Linkage::Private);
+        global.set_alignment(8);
+
+        // point to data, not header
+        let ptr = self.builder.build_struct_gep(
+            value.get_type(),
+            global.as_pointer_value(),
+            1,
+            "str.ptr",
+        )?;
+        Ok(self.builder.build_ptr_to_int(ptr, self.word, "str.word")?)
+    }
+
+    fn compile_tuple(&mut self, elements: &[ast::Expr]) -> Result<IntValue<'ctx>> {
+        let values = elements
+            .iter()
+            .map(|e| self.compile_expression(e))
+            .collect::<Result<Vec<_>>>()?;
+
+        let words = elements.len();
+        let tuple = self
+            .builder
+            .build_direct_call(
+                self.miniml_alloc,
+                &[
+                    self.word.const_int(words as u64, false).into(),
+                    self.word.const_int(Tag::Tuple as u64, false).into(),
+                ],
+                "tuple",
+            )?
+            .try_as_basic_value()
+            .expect_basic("miniml_alloc returns a value")
+            .into_pointer_value();
+
+        for (i, value) in values.iter().enumerate() {
+            let field = unsafe {
+                self.builder.build_gep(
+                    self.word,
+                    tuple,
+                    &[self.word.const_int(i as u64, false)],
+                    "tuple.field",
+                )?
+            };
+            self.builder.build_store(field, *value)?;
+        }
+
+        Ok(self
+            .builder
+            .build_ptr_to_int(tuple, self.word, "tuple.word")?)
     }
 
     fn compile_short_circuit(

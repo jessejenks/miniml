@@ -153,7 +153,7 @@ fn main() -> miette::Result<()> {
         compiler.set_target(triple.clone());
     }
     compiler
-        .compile(&elaborated_program, result_kind, &result_label)
+        .compile(&elaborated_program, &result_kind, &result_label)
         .map_err(|e| report(e, &args.path, &source))?;
     if let Some(level) = args.optimize {
         compiler
@@ -188,7 +188,14 @@ fn result_kind(tp: &typecheck::TypeExpr) -> ResultKind {
         typecheck::TypeExpr::Char => ResultKind::Char,
         typecheck::TypeExpr::Int => ResultKind::Int,
         typecheck::TypeExpr::String => ResultKind::String,
-        typecheck::TypeExpr::Product(..) => ResultKind::Tuple,
+        typecheck::TypeExpr::Product(elts) => {
+            let kinds: Vec<ResultKind> = elts.iter().map(result_kind).collect();
+            if kinds.contains(&ResultKind::Never) {
+                ResultKind::Never
+            } else {
+                ResultKind::Tuple(kinds)
+            }
+        }
         typecheck::TypeExpr::Arrow(..) => ResultKind::Function,
         typecheck::TypeExpr::Var(..) | typecheck::TypeExpr::UnifVar(_) => ResultKind::Never,
     }

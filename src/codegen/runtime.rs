@@ -1,7 +1,7 @@
 use inkwell::values::{BasicMetadataValueEnum, FunctionValue, IntValue};
 
 use super::{CodegenError, Compiler, Result};
-use crate::ast;
+use crate::{ast, codegen::Tag};
 
 impl<'ctx> Compiler<'ctx> {
     pub(super) fn define_cons(&mut self) -> Result<()> {
@@ -20,7 +20,7 @@ impl<'ctx> Compiler<'ctx> {
                 self.miniml_alloc,
                 &[
                     self.word.const_int(2, false).into(),
-                    self.word.const_int(248, false).into(),
+                    self.word.const_int(Tag::Env as u64, false).into(),
                 ],
                 "cell",
             )? // 0 = env tag
@@ -60,7 +60,7 @@ impl<'ctx> Compiler<'ctx> {
                 self.miniml_alloc,
                 &[
                     self.word.const_int(2, false).into(),
-                    self.word.const_int(247, false).into(),
+                    self.word.const_int(Tag::Closure as u64, false).into(),
                 ],
                 "closure",
             )? // closure tag

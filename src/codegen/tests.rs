@@ -29,7 +29,7 @@ fn run(source: &str) -> i64 {
     let context = Context::create();
     let mut compiler = Compiler::new(&context, "test").unwrap();
     compiler
-        .compile(&program, ResultKind::ExitCode, "")
+        .compile(&program, &ResultKind::ExitCode, "")
         .unwrap();
     if let Err(e) = compiler.module.verify() {
         panic!("invalid IR for {source:?}: {e}\n{}", compiler.ir());
@@ -181,7 +181,7 @@ fn unknown_variable() {
     let context = Context::create();
     let mut compiler = Compiler::new(&context, "test").unwrap();
     assert!(matches!(
-        compiler.compile(&program, ResultKind::ExitCode, ""),
+        compiler.compile(&program, &ResultKind::ExitCode, ""),
         Err(CodegenError::UnknownVariable { name, .. }) if name == "foo"
     ));
 }
