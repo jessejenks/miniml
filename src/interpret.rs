@@ -284,6 +284,7 @@ fn cbv(expr: Expr) -> Expr {
                 (ast::BinaryOp::Eq, Expr::Char(a), Expr::Char(b)) => Expr::Bool(a == b),
                 (ast::BinaryOp::Eq, Expr::Int(a), Expr::Int(b)) => Expr::Bool(a == b),
                 (ast::BinaryOp::Eq, Expr::String(a), Expr::String(b)) => Expr::Bool(a == b),
+                (ast::BinaryOp::Eq, Expr::Tuple(a), Expr::Tuple(b)) => Expr::Bool(a == b),
                 (ast::BinaryOp::Concat, Expr::String(a), Expr::String(b)) => Expr::String(a + &b),
                 (ast::BinaryOp::BitAnd, Expr::Int(a), Expr::Int(b)) => Expr::Int(a & b),
                 (ast::BinaryOp::BitOr, Expr::Int(a), Expr::Int(b)) => Expr::Int(a | b),

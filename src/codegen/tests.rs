@@ -159,6 +159,12 @@ fn compiles_expressions() {
     agrees("if 123 == 123 then 1 else 2");
     agrees("if \"abc\" == \"abc\" then 1 else 2");
     agrees("if \"abc\" == \"def\" then 1 else 2");
+    agrees("if (1 + 1, \"a\" ++ \"b\") == (2, \"ab\") then 1 else 2");
+    agrees("if (1 + 1, \"a\" ++ \"b\") == (3, \"ab\") then 1 else 2");
+    agrees("if (1 + 1, \"a\" ++ \"b\") == (1, \"ac\") then 1 else 2");
+    agrees("if ((1, \"a\"), ((), true, 'c')) == ((1, \"a\"), ((), true, 'c')) then 1 else 2");
+    agrees("let f = fun x => (x, x); if f 3 == (3, 3) then 1 else 2");
+    agrees("let t = (1, 2); let g = fun _ => t; if g () == (1, 2) then 1 else 2");
     // string concat
     agrees("if \"\" ++ \"\" == \"\" then 1 else 2");
     agrees("if \"abcdefg\" ++ \"h\" == \"abcdefgh\" then 1 else 2"); // combined string is 8 bytes

@@ -28,6 +28,7 @@ static size_t guard_size;
 
 // header constants
 #define MARK_BIT 0x100
+#define TUPLE_TAG 0
 #define CLOSURE_TAG 247
 #define ENV_TAG 248
 #define NO_SCAN_TAG 251
@@ -417,9 +418,18 @@ int64_t miniml_equal(uint64_t left, uint64_t right) {
     uint64_t *p = (uint64_t *)left;
     uint64_t *q = (uint64_t *)right;
     if (header_tag(p[-1]) != header_tag(q[-1])) return 0;
-    if (header_size(p[-1]) != header_size(q[-1])) return 0;
+    uint64_t size = header_size(p[-1]);
+    if (size != header_size(q[-1])) return 0;
     if (header_tag(p[-1]) == STRING_TAG) {
-        return memcmp(p, q, header_size(p[-1]) * sizeof(uint64_t)) == 0;
+        return memcmp(p, q, size * sizeof(uint64_t)) == 0;
+    }
+    if (header_tag(p[-1]) == TUPLE_TAG) {
+        for (uint64_t i = 0; i < size; i++) {
+            if (!miniml_equal(p[i], q[i])) {
+                return 0;
+            }
+        }
+        return 1;
     }
     return 0;
 }

@@ -169,7 +169,7 @@ pub enum TypeError {
         span: SourceSpan,
     },
     #[error("type cannot be compared with '==' {tp}")]
-    #[diagnostic(code(typecheck::equalirt))]
+    #[diagnostic(code(typecheck::equality))]
     Equality {
         tp: String,
         #[label("this term")]
@@ -433,6 +433,12 @@ impl TypeChecker {
             TypeExpr::UnifVar(id) => {
                 let idx = usize::try_from(id).unwrap();
                 self.eq[idx] = true;
+                Ok(())
+            }
+            TypeExpr::Product(elts) => {
+                for e in elts.iter() {
+                    self.require_equality(span, e.clone())?;
+                }
                 Ok(())
             }
             other => Err(TypeError::Equality {
@@ -733,6 +739,7 @@ mod tests {
             check("let y = 1; let f = fun z => (y, z); f").unwrap(),
             "(∀α.α -> (Int × α))"
         );
+        assert_eq!(check("(1, 2) == (3, 4)").unwrap(), "Bool");
     }
 
     #[test]
@@ -776,6 +783,10 @@ mod tests {
         // infers f as arrow type, so equality fails
         assert!(matches!(
             check("fun f => fun x => { f x; f == f }"),
+            Err(TypeError::Equality { .. })
+        ));
+        assert!(matches!(
+            check("(1, fun x => x) == (1, fun y => y)"),
             Err(TypeError::Equality { .. })
         ));
     }
