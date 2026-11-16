@@ -47,6 +47,31 @@ impl Display for BinaryOp {
     }
 }
 
+pub enum Pattern<'a> {
+    Wild(Span),
+    Variable(Span, &'a str),
+    Tuple(Span, Vec<Pattern<'a>>),
+}
+
+impl Display for Pattern<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Wild(_) => write!(f, "_"),
+            Self::Variable(_, x) => write!(f, "{x}"),
+            Self::Tuple(_, patterns) => {
+                write!(f, "(")?;
+                for (i, p) in patterns.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{p}")?;
+                }
+                write!(f, ")")
+            }
+        }
+    }
+}
+
 pub struct Identifier<'a> {
     pub name: &'a str,
     pub span: Span,
@@ -61,7 +86,7 @@ pub enum ExprKind<'a> {
     Variable(&'a str),
     Application(Box<Expr<'a>>, Box<Expr<'a>>),
     Abstraction(Vec<Identifier<'a>>, Box<Expr<'a>>),
-    LetIn(bool, Identifier<'a>, Box<Expr<'a>>, Box<Expr<'a>>),
+    LetIn(bool, Pattern<'a>, Box<Expr<'a>>, Box<Expr<'a>>),
     IfElse(Box<Expr<'a>>, Box<Expr<'a>>, Box<Expr<'a>>),
     Unary(UnaryOp, Box<Expr<'a>>),
     Binary(BinaryOp, Box<Expr<'a>>, Box<Expr<'a>>),
@@ -97,7 +122,7 @@ impl Display for ExprKind<'_> {
                 f,
                 "(let {}{} = {expr}; {body})",
                 if *is_rec { "rec " } else { "" },
-                x.name,
+                x,
             ),
             ExprKind::IfElse(condition, consequence, alternative) => {
                 write!(f, "(if {condition} then {consequence} else {alternative})")

@@ -46,22 +46,42 @@ fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) 
             ast::ExprKind::Abstraction(binders[0].1, Box::new(inner))
         }
         surface::ExprKind::LetIn(is_rec, x, expr, body) => {
-            let (expr_elabed, body_elabed) = if is_rec {
-                scope.push(if x.name == "_" { "" } else { x.name });
+            let (expr_elabed, body_elabed, span) = if is_rec {
+                let s = match x {
+                    surface::Pattern::Wild(s) => {
+                        scope.push("");
+                        s
+                    }
+                    surface::Pattern::Variable(s, n) => {
+                        scope.push(n);
+                        s
+                    }
+                    surface::Pattern::Tuple(_, _) => todo!(),
+                };
                 let e = surface_to_core_inner(scope, *expr);
                 let b = surface_to_core_inner(scope, *body);
                 scope.pop();
-                (e, b)
+                (e, b, s)
             } else {
                 let e = surface_to_core_inner(scope, *expr);
-                scope.push(if x.name == "_" { "" } else { x.name });
+                let s = match x {
+                    surface::Pattern::Wild(s) => {
+                        scope.push("");
+                        s
+                    }
+                    surface::Pattern::Variable(s, n) => {
+                        scope.push(n);
+                        s
+                    }
+                    surface::Pattern::Tuple(_, _) => todo!(),
+                };
                 let b = surface_to_core_inner(scope, *body);
                 scope.pop();
-                (e, b)
+                (e, b, s)
             };
             ast::ExprKind::LetIn(
                 is_rec,
-                Some(x.span),
+                Some(span),
                 Box::new(expr_elabed),
                 Box::new(body_elabed),
             )

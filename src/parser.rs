@@ -174,7 +174,7 @@ impl<'a> Parser<'a> {
         if (self.chomp_if_next_is(Token::Keyword(Keyword::Let)))? {
             let (let_start, _, _) = self.prev_token.expect("just read `let`");
             let is_recursive = self.chomp_if_next_is(Token::Keyword(Keyword::Rec))?;
-            let variable = self.expect_identifier()?;
+            let pattern = self.pattern()?;
             self.expect(Token::Equal)?;
             let expr = self.expression(0)?;
             let body_start = if self.just_closed_block() {
@@ -188,7 +188,7 @@ impl<'a> Parser<'a> {
             let body = self.block_body(body_start)?;
             let end = body.span.end;
             return Ok(surface::Expr::new(
-                surface::ExprKind::LetIn(is_recursive, variable, Box::new(expr), Box::new(body)),
+                surface::ExprKind::LetIn(is_recursive, pattern, Box::new(expr), Box::new(body)),
                 let_start,
                 end,
             ));
@@ -399,17 +399,42 @@ impl<'a> Parser<'a> {
     fn let_in(&mut self, start: usize) -> Result<surface::Expr<'a>, ParseError> {
         // already read `let`
         let is_recursive = self.chomp_if_next_is(Token::Keyword(Keyword::Rec))?;
-        let variable = self.expect_identifier()?;
+        let pattern = self.pattern()?;
         self.expect(Token::Equal)?;
         let expr = self.expression(0)?;
         self.expect(Token::Semi)?;
         let body = self.expression(0)?;
         let end = body.span.end;
         Ok(surface::Expr::new(
-            surface::ExprKind::LetIn(is_recursive, variable, Box::new(expr), Box::new(body)),
+            surface::ExprKind::LetIn(is_recursive, pattern, Box::new(expr), Box::new(body)),
             start,
             end,
         ))
+    }
+
+    fn pattern(&mut self) -> Result<surface::Pattern<'a>, ParseError> {
+        match self.next()? {
+            Some((start, Token::Identifier(x), end)) => match x {
+                "_" => Ok(surface::Pattern::Wild((start..end).into())),
+                x => Ok(surface::Pattern::Variable((start..end).into(), x)),
+            },
+            Some((start, Token::LParen, _)) => {
+                let mut elements = vec![self.pattern()?];
+                self.expect(Token::Comma)?;
+                elements.push(self.pattern()?);
+                while self.chomp_if_next_is(Token::Comma)? {
+                    elements.push(self.pattern()?);
+                }
+                let (_, _, end) = self.expect(Token::RParen)?;
+                Ok(surface::Pattern::Tuple((start..end).into(), elements))
+            }
+            Some((start, tok, end)) => Err(ParseError::UnexpectedTokenExpecting {
+                actual: format!("{tok:?}"),
+                expected: "_, variable, or tuple".to_string(),
+                span: (start..end).into(),
+            }),
+            None => Err(self.eof_error()),
+        }
     }
 
     fn if_else(&mut self, start: usize) -> Result<surface::Expr<'a>, ParseError> {
@@ -588,6 +613,19 @@ mod tests {
             "(let x = (if condition then (fun y => (y + 1)) else (fun z => (z + 2))); (x 3))"
         );
         assert_eq!(
+            parse("let _ = print \"hi\"; 1").to_string(),
+            "(let _ = (print \"hi\"); 1)"
+        );
+        assert_eq!(parse("let x = 1; x").to_string(), "(let x = 1; x)");
+        assert_eq!(
+            parse("let (x, y) = (1, 2); x + y").to_string(),
+            "(let (x, y) = (1, 2); (x + y))"
+        );
+        assert_eq!(
+            parse("let (x, _, z) = (1, 2, 3); x + z").to_string(),
+            "(let (x, _, z) = (1, 2, 3); (x + z))"
+        );
+        assert_eq!(
             parse("if x then 1 else 2").to_string(),
             "(if x then 1 else 2)"
         );
@@ -689,7 +727,7 @@ mod tests {
     #[test]
     fn bad_binders() {
         assert_expecting("let x 1", "Int(1)", "Equal", 6..7);
-        assert_expecting("let let = 1", "Keyword(Let)", "identifier", 4..7);
+        assert_expecting("let let = 1", "Keyword(Let)", "_, variable, or tuple", 4..7);
         assert_expecting("fun x x", "Identifier(\"x\")", "WideArrow", 6..7);
         assert_eof("fun x =>");
     }
