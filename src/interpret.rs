@@ -3,6 +3,13 @@ use crate::lexer::escape_str;
 use std::fmt::Display;
 
 #[derive(Debug, PartialEq, Clone)]
+pub enum Pattern {
+    Wild,
+    Variable,
+    Tuple(Vec<Pattern>),
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Unit,
     Bool(bool),
@@ -13,7 +20,7 @@ pub enum Expr {
     FreeVariable(String),
     Application(Box<Expr>, Box<Expr>),
     Abstraction(Box<Expr>),
-    LetIn(bool, Box<Expr>, Box<Expr>),
+    LetIn(bool, Pattern, Box<Expr>, Box<Expr>),
     IfElse(Box<Expr>, Box<Expr>, Box<Expr>),
     Unary(ast::UnaryOp, Box<Expr>),
     Binary(ast::BinaryOp, Box<Expr>, Box<Expr>),
@@ -32,7 +39,7 @@ impl Display for Expr {
             Expr::BoundVariable(i) => write!(f, "#{i}"),
             Expr::Application(left, right) => write!(f, "({left} {right})"),
             Expr::Abstraction(body) => write!(f, "(λ.{body})"),
-            Expr::LetIn(is_rec, expr, body) => write!(
+            Expr::LetIn(is_rec, _, expr, body) => write!(
                 f,
                 "(let {}{expr} in {body})",
                 if *is_rec { "rec " } else { "" },
@@ -69,8 +76,9 @@ fn to_spanless(expr: &ast::Expr) -> Expr {
             Expr::Application(Box::new(to_spanless(left)), Box::new(to_spanless(right)))
         }
         ast::ExprKind::Abstraction(_, body) => Expr::Abstraction(Box::new(to_spanless(body))),
-        ast::ExprKind::LetIn(is_rec, _, expr, body) => Expr::LetIn(
+        ast::ExprKind::LetIn(is_rec, pattern, expr, body) => Expr::LetIn(
             *is_rec,
+            to_spanless_pattern(pattern),
             Box::new(to_spanless(expr)),
             Box::new(to_spanless(body)),
         ),
@@ -86,6 +94,39 @@ fn to_spanless(expr: &ast::Expr) -> Expr {
             Box::new(to_spanless(right)),
         ),
         ast::ExprKind::Tuple(elements) => Expr::Tuple(elements.iter().map(to_spanless).collect()),
+    }
+}
+
+fn to_spanless_pattern(pattern: &ast::Pattern) -> Pattern {
+    match pattern {
+        ast::Pattern::Wild(_) => Pattern::Wild,
+        ast::Pattern::Variable(_) => Pattern::Variable,
+        ast::Pattern::Tuple(_, patterns) => {
+            Pattern::Tuple(patterns.iter().map(to_spanless_pattern).collect())
+        }
+    }
+}
+
+fn leaf_count(pattern: &Pattern) -> i64 {
+    match pattern {
+        Pattern::Wild | Pattern::Variable => 1,
+        Pattern::Tuple(patterns) => patterns.iter().fold(0, |acc, curr| acc + leaf_count(curr)),
+    }
+}
+
+fn get_leaves(pattern: &Pattern, value: &Expr, out: &mut Vec<Expr>) -> bool {
+    match (pattern, value) {
+        (Pattern::Wild | Pattern::Variable, v) => {
+            out.push(v.clone());
+            true
+        }
+        (Pattern::Tuple(patterns), Expr::Tuple(elements)) if patterns.len() == elements.len() => {
+            patterns
+                .iter()
+                .zip(elements)
+                .all(|(p, v)| get_leaves(p, v, out))
+        }
+        _ => false,
     }
 }
 
@@ -108,11 +149,15 @@ fn shift(i: i64, c: i64, expr: Expr) -> Expr {
             Expr::Application(Box::new(shift(i, c, *left)), Box::new(shift(i, c, *right)))
         }
         Expr::Abstraction(body) => Expr::Abstraction(Box::new(shift(i, c + 1, *body))),
-        Expr::LetIn(is_rec, e, b) => Expr::LetIn(
-            is_rec,
-            Box::new(shift(i, if is_rec { c + 1 } else { c }, *e)),
-            Box::new(shift(i, c + 1, *b)),
-        ),
+        Expr::LetIn(is_rec, pattern, e, b) => {
+            let count = leaf_count(&pattern);
+            Expr::LetIn(
+                is_rec,
+                pattern,
+                Box::new(shift(i, if is_rec { c + 1 } else { c }, *e)),
+                Box::new(shift(i, c + count, *b)),
+            )
+        }
         Expr::IfElse(condition, consequence, alternative) => Expr::IfElse(
             Box::new(shift(i, c, *condition)),
             Box::new(shift(i, c, *consequence)),
@@ -152,16 +197,18 @@ fn substitute(t: Expr, n: i64, expr: Expr) -> Expr {
         Expr::Abstraction(body) => {
             Expr::Abstraction(Box::new(substitute(*body, n + 1, shift(1, 0, expr))))
         }
-        Expr::LetIn(is_rec, e, b) => {
-            let shifted_expr = shift(1, 0, expr.clone());
+        Expr::LetIn(is_rec, pattern, e, b) => {
+            let count = leaf_count(&pattern);
+            let shifted_expr = shift(count, 0, expr.clone());
             Expr::LetIn(
                 is_rec,
+                pattern,
                 if is_rec {
                     Box::new(substitute(*e, n + 1, shifted_expr.clone()))
                 } else {
                     Box::new(substitute(*e, n, expr))
                 },
-                Box::new(substitute(*b, n + 1, shifted_expr)),
+                Box::new(substitute(*b, n + count, shifted_expr)),
             )
         }
         Expr::IfElse(condition, consequence, alternative) => Expr::IfElse(
@@ -222,21 +269,32 @@ fn cbv(expr: Expr) -> Expr {
                 l => stuck_application(l, right_val),
             }
         }
-        Expr::LetIn(is_rec, expr, body) => {
+        Expr::LetIn(is_rec, pattern, expr, body) => {
             if is_rec {
                 // fix
                 let unfolded = beta(
                     *expr.clone(),
-                    Expr::LetIn(true, expr, Box::new(Expr::BoundVariable(0))),
+                    Expr::LetIn(
+                        true,
+                        pattern.clone(),
+                        expr,
+                        Box::new(Expr::BoundVariable(0)),
+                    ),
                 );
                 if matches!(*body, Expr::BoundVariable(0)) {
                     cbv(unfolded)
                 } else {
-                    cbv(Expr::LetIn(false, Box::new(unfolded), body))
+                    cbv(Expr::LetIn(false, pattern, Box::new(unfolded), body))
                 }
             } else {
                 // zeta
-                cbv(beta(*body, cbv(*expr)))
+                let expr_value = cbv(*expr);
+                let mut leaves = Vec::new();
+                if get_leaves(&pattern, &expr_value, &mut leaves) {
+                    cbv(leaves.into_iter().rev().fold(*body, beta))
+                } else {
+                    Expr::LetIn(false, pattern, Box::new(expr_value), body)
+                }
             }
         }
         Expr::IfElse(condition, consequence, alternative) => {
@@ -362,6 +420,19 @@ mod tests {
             "(λ.(if (< #0 2) then 1 else (* #0 ((let rec (λ.(if (< #0 2) then 1 else (* #0 (#1 (- #0 1))))) in #0) (- #0 1)))))"
         );
         assert_eq!(interp("(1 + 2, 3)").to_string(), "(3, 3)");
+        // tuples and patterns
+        assert_eq!(interp("let _ = 1; 2").to_string(), "2");
+        assert_eq!(interp("let x = 1; (x, x)").to_string(), "(1, 1)");
+        assert_eq!(interp("let (x, y) = (1, 2); 1 + 2").to_string(), "3");
+        assert_eq!(
+            interp("let (x, (y, z)) = (1, (2, 3)); x + y + z").to_string(),
+            "6"
+        );
+        assert_eq!(
+            // pattern doesn't match, so stuck
+            interp("let (x, (y, z)) = (1, ()); x + y + z").to_string(),
+            "(let (1, ()) in (+ (+ #2 #1) #0))"
+        );
         // builtins
         assert_eq!(interp("print ()").to_string(), "(print ())");
         assert_eq!(interp("print 3").to_string(), "(print 3)");
