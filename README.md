@@ -360,7 +360,7 @@ Notes:
 
 - [x] Garbage collection
 - [x] Strings and characters
-- [ ] Tuple types
+- [x] Tuple types
 - [ ] Algebraic data types
 - [ ] Pattern matching
 
