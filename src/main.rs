@@ -116,15 +116,8 @@ fn main() -> miette::Result<()> {
             let mut expr = &elaborated_program;
             loop {
                 match &expr.kind {
-                    ast::ExprKind::LetIn(
-                        _,
-                        ast::Pattern::Wild(span)
-                        | ast::Pattern::Variable(span)
-                        | ast::Pattern::Tuple(span, _),
-                        _,
-                        body,
-                    ) => {
-                        spans.push(*span);
+                    ast::ExprKind::LetIn(_, pattern, _, body) => {
+                        collect_spans(&mut spans, pattern);
                         expr = body;
                     }
                     ast::ExprKind::Application(f, _) => match &f.kind {
@@ -187,6 +180,20 @@ fn main() -> miette::Result<()> {
     compiler
         .build_executable(&output)
         .map_err(|e| report(e, &args.path, &source))
+}
+
+fn collect_spans(spans: &mut Vec<ast::Span>, pattern: &ast::Pattern) {
+    match pattern {
+        ast::Pattern::Wild(_) => {}
+        ast::Pattern::Variable(span) => {
+            spans.push(*span);
+        }
+        ast::Pattern::Tuple(_, patterns) => {
+            for p in patterns {
+                collect_spans(spans, p);
+            }
+        }
+    }
 }
 
 fn result_kind(tp: &typecheck::TypeExpr) -> ResultKind {
