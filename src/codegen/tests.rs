@@ -170,6 +170,14 @@ fn compiles_expressions() {
     agrees("if \"abcdefg\" ++ \"h\" == \"abcdefgh\" then 1 else 2"); // combined string is 8 bytes
     agrees("if \"abc\" ++ \"def\" ++ \"ghi\" == \"abcdefghi\" then 1 else 2");
     agrees("if \"ab\" ++ \"c\" == \"abd\" then 1 else 2");
+    // destructuring
+    agrees("let x = 1; x");
+    agrees("let (x, y) = (1, 2); x + y");
+    agrees(
+        "let a = 1; let b = 2; let ((x, y), (z, w), (u, v)) = ((1, 2), (3, 4), (a, b)); x + y * z - w + u - v",
+    );
+    agrees("(fun a => let (x, y) = (1, 2); a + x * y) 10");
+    agrees("let f = fun p => let (x, (y, z)) = p; x - y * z; f (10, (2, 3))");
     // builtins
     agrees("if len \"abcd\" == 4 then 1 else 2");
     agrees("if len \"abcd\" == 5 then 1 else 2");

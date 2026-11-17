@@ -34,11 +34,13 @@ impl<'ctx> Compiler<'ctx> {
                 self.end_function(block, env);
                 self.cur(func)
             }
-            ast::ExprKind::LetIn(false, _, expr, body) => {
+            ast::ExprKind::LetIn(false, pattern, expr, body) => {
                 let value = self.compile_expression(expr)?;
-                self.let_in(value)?;
+                let count = self.bind_pattern(pattern, value)?;
                 let result = self.compile_expression(body)?;
-                self.end_let()?;
+                for _ in 0..count {
+                    self.end_let()?;
+                }
                 Ok(result)
             }
             ast::ExprKind::LetIn(true, _, expr, body) => {
@@ -100,9 +102,9 @@ impl<'ctx> Compiler<'ctx> {
                 self.end_function(block, env);
                 self.grab(func)
             }
-            ast::ExprKind::LetIn(false, _, expr, body) => {
+            ast::ExprKind::LetIn(false, pattern, expr, body) => {
                 let value = self.compile_expression(expr)?;
-                self.let_in(value)?;
+                self.bind_pattern(pattern, value)?;
                 self.compile_expression_tail(body)
             }
             ast::ExprKind::LetIn(true, _, expr, body) => {
@@ -119,6 +121,37 @@ impl<'ctx> Compiler<'ctx> {
                 self.compile_expression_tail(consequence)?;
                 self.builder.position_at_end(else_block);
                 self.compile_expression_tail(alternative)
+            }
+        }
+    }
+
+    fn bind_pattern(&mut self, pattern: &ast::Pattern, value: IntValue<'ctx>) -> Result<usize> {
+        match pattern {
+            ast::Pattern::Wild(_) | ast::Pattern::Variable(_) => {
+                self.let_in(value)?;
+                Ok(1)
+            }
+            ast::Pattern::Tuple(_, patterns) => {
+                let ptr = self
+                    .builder
+                    .build_int_to_ptr(value, self.ptr_type, "tuple")?;
+                let mut count = 0;
+                for (i, pattern) in patterns.iter().enumerate() {
+                    let field = unsafe {
+                        self.builder.build_gep(
+                            self.word,
+                            ptr,
+                            &[self.word.const_int(i as u64, false)],
+                            "tuple.field",
+                        )?
+                    };
+                    let field = self
+                        .builder
+                        .build_load(self.word, field, "field")?
+                        .into_int_value();
+                    count += self.bind_pattern(pattern, field)?;
+                }
+                Ok(count)
             }
         }
     }
