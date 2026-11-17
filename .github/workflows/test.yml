@@ -5,7 +5,9 @@ on:
     branches: [main]
     paths-ignore: ["**.md"]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore: ["**.md"]
+
 
 permissions:
   contents: read
@@ -13,6 +15,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
+    if: ${{ !github.event.pull_request.draft }}
     env:
       LLVM_SYS_211_PREFIX: /usr/lib/llvm-21
     steps:
@@ -36,6 +39,7 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    if: ${{ !github.event.pull_request.draft }}
     env:
       LLVM_SYS_211_PREFIX: C:\llvm
       RUST_BACKTRACE: 1
