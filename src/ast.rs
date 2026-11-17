@@ -88,6 +88,13 @@ impl Display for BinaryOp {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum Pattern {
+    Wild(Span),
+    Variable(Span),
+    Tuple(Span, Vec<Pattern>),
+}
+
+#[derive(Debug, PartialEq)]
 pub enum ExprKind {
     Unit,
     Bool(bool),
@@ -98,7 +105,7 @@ pub enum ExprKind {
     FreeVariable(String),
     Application(Box<Expr>, Box<Expr>),
     Abstraction(Option<Span>, Box<Expr>),
-    LetIn(bool, Option<Span>, Box<Expr>, Box<Expr>),
+    LetIn(bool, Pattern, Box<Expr>, Box<Expr>),
     IfElse(Box<Expr>, Box<Expr>, Box<Expr>),
     Unary(UnaryOp, Box<Expr>),
     Binary(BinaryOp, Box<Expr>, Box<Expr>),

@@ -25,7 +25,7 @@ static RUNTIME_LOCK: Mutex<()> = Mutex::new(());
 
 fn run(source: &str) -> i64 {
     // validate and run inkwell JIT
-    let program = surface_to_core(Parser::parse(source).unwrap());
+    let program = surface_to_core(Parser::parse(source).unwrap()).unwrap();
     let context = Context::create();
     let mut compiler = Compiler::new(&context, "test").unwrap();
     compiler
@@ -95,7 +95,7 @@ fn run(source: &str) -> i64 {
 
 fn agrees(source: &str) {
     // compare to reference interpreter
-    let program = surface_to_core(Parser::parse(source).unwrap());
+    let program = surface_to_core(Parser::parse(source).unwrap()).unwrap();
     let expected = interpret(&program).to_string();
     assert_eq!(run(source).to_string(), expected, "{source}");
 }
@@ -183,7 +183,7 @@ fn compiles_expressions() {
 
 #[test]
 fn unknown_variable() {
-    let program = surface_to_core(Parser::parse("1 + foo").unwrap());
+    let program = surface_to_core(Parser::parse("1 + foo").unwrap()).unwrap();
     let context = Context::create();
     let mut compiler = Compiler::new(&context, "test").unwrap();
     assert!(matches!(

@@ -228,9 +228,9 @@ impl TypeChecker {
             ast::ExprKind::FreeVariable(name) => self.rule_free_var(expr.span, name.clone()),
             ast::ExprKind::Application(left, right) => self.rule_app(expr.span, left, right),
             ast::ExprKind::Abstraction(_, body) => self.rule_abs(body),
-            ast::ExprKind::LetIn(false, var_span, e, body) => self.rule_let(*var_span, e, body),
-            ast::ExprKind::LetIn(true, var_span, e, body) => {
-                self.rule_let_rec(expr.span, *var_span, e, body)
+            ast::ExprKind::LetIn(false, pattern, e, body) => self.rule_let(pattern, e, body),
+            ast::ExprKind::LetIn(true, pattern, e, body) => {
+                self.rule_let_rec(expr.span, pattern, e, body)
             }
             ast::ExprKind::IfElse(condition, consequence, alternative) => {
                 self.rule_if(expr.span, condition, consequence, alternative)
@@ -290,7 +290,7 @@ impl TypeChecker {
 
     fn rule_let(
         &mut self,
-        var_span: Option<ast::Span>,
+        pattern: &ast::Pattern,
         expr: &ast::Expr,
         body: &ast::Expr,
     ) -> Result<TypeExpr> {
@@ -298,8 +298,12 @@ impl TypeChecker {
         let t_prime = self.algorithm_j(expr)?;
         self.current_level -= 1;
         let t_prime_gen = self.generalize(t_prime);
-        if let Some(var_span) = var_span {
-            self.bindings.push((var_span, t_prime_gen.clone()));
+        if let Some(var_span) = match pattern {
+            ast::Pattern::Variable(span) => Some(span),
+            ast::Pattern::Wild(_) => None,
+            ast::Pattern::Tuple(_, _) => todo!(),
+        } {
+            self.bindings.push((*var_span, t_prime_gen.clone()));
         }
         self.context.push(t_prime_gen);
         let t = self.algorithm_j(body)?;
@@ -310,7 +314,7 @@ impl TypeChecker {
     fn rule_let_rec(
         &mut self,
         span: ast::Span,
-        var_span: Option<ast::Span>,
+        pattern: &ast::Pattern,
         expr: &ast::Expr,
         body: &ast::Expr,
     ) -> Result<TypeExpr> {
@@ -322,8 +326,12 @@ impl TypeChecker {
         self.unify(span, t_prime.clone(), t1)?;
         self.current_level -= 1;
         let t_prime_gen = self.generalize(t_prime);
-        if let Some(var_span) = var_span {
-            self.bindings.push((var_span, t_prime_gen.clone()));
+        if let Some(var_span) = match pattern {
+            ast::Pattern::Variable(span) => Some(span),
+            ast::Pattern::Wild(_) => None,
+            ast::Pattern::Tuple(_, _) => todo!(),
+        } {
+            self.bindings.push((*var_span, t_prime_gen.clone()));
         }
         self.context.push(t_prime_gen);
         let t = self.algorithm_j(body)?;
@@ -658,7 +666,7 @@ mod tests {
     use crate::{elaborate::surface_to_core, parser::Parser};
 
     fn check(source: &str) -> Result<String> {
-        let program = surface_to_core(Parser::parse(source).unwrap());
+        let program = surface_to_core(Parser::parse(source).unwrap()).unwrap();
         TypeChecker::new()
             .infer(&program)
             .map(|scheme| scheme.to_string())

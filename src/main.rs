@@ -92,7 +92,8 @@ fn main() -> miette::Result<()> {
         return Ok(());
     }
 
-    let elaborated_program = surface_to_core(program);
+    let elaborated_program =
+        surface_to_core(program).map_err(|e| report(e, &args.path, &source))?;
     if args.elab {
         println!("{elaborated_program}");
         return Ok(());
@@ -115,7 +116,14 @@ fn main() -> miette::Result<()> {
             let mut expr = &elaborated_program;
             loop {
                 match &expr.kind {
-                    ast::ExprKind::LetIn(_, Some(span), _, body) => {
+                    ast::ExprKind::LetIn(
+                        _,
+                        ast::Pattern::Wild(span)
+                        | ast::Pattern::Variable(span)
+                        | ast::Pattern::Tuple(span, _),
+                        _,
+                        body,
+                    ) => {
                         spans.push(*span);
                         expr = body;
                     }

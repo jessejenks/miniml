@@ -1,12 +1,36 @@
+use miette::Diagnostic;
+use miette::SourceSpan;
+use thiserror::Error;
+
 use crate::ast;
 use crate::lexer;
 use crate::surface;
 
-pub fn surface_to_core(program: surface::Expr) -> ast::Expr {
+#[derive(Debug, Error, Diagnostic)]
+pub enum ElaborationError {
+    #[error("variable {x} is bound multiple times")]
+    #[diagnostic(code(elaborator::multiple_bindings))]
+    MultipleBindings {
+        x: String,
+        #[label("this variable has already appeared")]
+        span: SourceSpan,
+    },
+    #[error("cannot destructure in recursive let")]
+    #[diagnostic(code(elaborator::destructured_let_rec))]
+    DestructuredLetRec {
+        #[label("cannot destructure here")]
+        span: SourceSpan,
+    },
+}
+
+pub fn surface_to_core(program: surface::Expr) -> Result<ast::Expr, ElaborationError> {
     surface_to_core_inner(&mut Vec::new(), program)
 }
 
-fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) -> ast::Expr {
+fn surface_to_core_inner<'a>(
+    scope: &mut Vec<&'a str>,
+    expr: surface::Expr<'a>,
+) -> Result<ast::Expr, ElaborationError> {
     let kind = match expr.kind {
         surface::ExprKind::Unit => ast::ExprKind::Unit,
         surface::ExprKind::Char(c) => ast::ExprKind::Char(c),
@@ -18,8 +42,8 @@ fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) 
             None => ast::ExprKind::FreeVariable(x.to_string()),
         },
         surface::ExprKind::Application(f, x) => ast::ExprKind::Application(
-            Box::new(surface_to_core_inner(scope, *f)),
-            Box::new(surface_to_core_inner(scope, *x)),
+            Box::new(surface_to_core_inner(scope, *f)?),
+            Box::new(surface_to_core_inner(scope, *x)?),
         ),
         surface::ExprKind::Abstraction(xs, body) => {
             let binders: Vec<(&str, Option<ast::Span>)> = if xs.is_empty() {
@@ -32,7 +56,7 @@ fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) 
             for (name, _) in &binders {
                 scope.push(name);
             }
-            let mut inner = surface_to_core_inner(scope, *body);
+            let mut inner = surface_to_core_inner(scope, *body)?;
             for (_, span) in binders[1..].iter().rev() {
                 scope.pop();
                 let start = span.map_or(inner.span.start, |s| s.start);
@@ -46,93 +70,70 @@ fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) 
             ast::ExprKind::Abstraction(binders[0].1, Box::new(inner))
         }
         surface::ExprKind::LetIn(is_rec, x, expr, body) => {
-            let (expr_elabed, body_elabed, span) = if is_rec {
-                let s = match x {
-                    surface::Pattern::Wild(s) => {
-                        scope.push("");
-                        s
-                    }
-                    surface::Pattern::Variable(s, n) => {
-                        scope.push(n);
-                        s
-                    }
-                    surface::Pattern::Tuple(_, _) => todo!(),
-                };
-                let e = surface_to_core_inner(scope, *expr);
-                let b = surface_to_core_inner(scope, *body);
+            if is_rec {
+                let (_, pattern) = push_scope(true, 0, scope, &x)?;
+                let e = surface_to_core_inner(scope, *expr)?;
+                let b = surface_to_core_inner(scope, *body)?;
                 scope.pop();
-                (e, b, s)
+                ast::ExprKind::LetIn(is_rec, pattern, Box::new(e), Box::new(b))
             } else {
-                let e = surface_to_core_inner(scope, *expr);
-                let s = match x {
-                    surface::Pattern::Wild(s) => {
-                        scope.push("");
-                        s
-                    }
-                    surface::Pattern::Variable(s, n) => {
-                        scope.push(n);
-                        s
-                    }
-                    surface::Pattern::Tuple(_, _) => todo!(),
-                };
-                let b = surface_to_core_inner(scope, *body);
-                scope.pop();
-                (e, b, s)
-            };
-            ast::ExprKind::LetIn(
-                is_rec,
-                Some(span),
-                Box::new(expr_elabed),
-                Box::new(body_elabed),
-            )
+                let e = surface_to_core_inner(scope, *expr)?;
+                let start = scope.len();
+                let (pop_count, pattern) = push_scope(false, start, scope, &x)?;
+                let b = surface_to_core_inner(scope, *body)?;
+                for _ in 0..pop_count {
+                    scope.pop();
+                }
+                ast::ExprKind::LetIn(is_rec, pattern, Box::new(e), Box::new(b))
+            }
         }
         surface::ExprKind::IfElse(condition, consequence, alternative) => ast::ExprKind::IfElse(
-            Box::new(surface_to_core_inner(scope, *condition)),
-            Box::new(surface_to_core_inner(scope, *consequence)),
-            Box::new(surface_to_core_inner(scope, *alternative)),
+            Box::new(surface_to_core_inner(scope, *condition)?),
+            Box::new(surface_to_core_inner(scope, *consequence)?),
+            Box::new(surface_to_core_inner(scope, *alternative)?),
         ),
         surface::ExprKind::Unary(op, expr) => {
-            ast::ExprKind::Unary(op, Box::new(surface_to_core_inner(scope, *expr)))
+            ast::ExprKind::Unary(op, Box::new(surface_to_core_inner(scope, *expr)?))
         }
         surface::ExprKind::Binary(surface::BinaryOp::Neq, left, right) => ast::ExprKind::Unary(
             ast::UnaryOp::Not,
             Box::new(ast::Expr {
                 kind: ast::ExprKind::Binary(
                     ast::BinaryOp::Eq,
-                    Box::new(surface_to_core_inner(scope, *left)),
-                    Box::new(surface_to_core_inner(scope, *right)),
+                    Box::new(surface_to_core_inner(scope, *left)?),
+                    Box::new(surface_to_core_inner(scope, *right)?),
                 ),
                 span: expr.span,
             }),
         ),
         surface::ExprKind::Binary(surface::BinaryOp::ForwardPipe, left, right) => {
             ast::ExprKind::Application(
-                Box::new(surface_to_core_inner(scope, *right)),
-                Box::new(surface_to_core_inner(scope, *left)),
+                Box::new(surface_to_core_inner(scope, *right)?),
+                Box::new(surface_to_core_inner(scope, *left)?),
             )
         }
         surface::ExprKind::Binary(surface::BinaryOp::BackwardPipe, left, right) => {
             ast::ExprKind::Application(
-                Box::new(surface_to_core_inner(scope, *left)),
-                Box::new(surface_to_core_inner(scope, *right)),
+                Box::new(surface_to_core_inner(scope, *left)?),
+                Box::new(surface_to_core_inner(scope, *right)?),
             )
         }
         surface::ExprKind::Binary(op, left, right) => ast::ExprKind::Binary(
             surface_to_core_binop(op),
-            Box::new(surface_to_core_inner(scope, *left)),
-            Box::new(surface_to_core_inner(scope, *right)),
+            Box::new(surface_to_core_inner(scope, *left)?),
+            Box::new(surface_to_core_inner(scope, *right)?),
         ),
         surface::ExprKind::Tuple(elements) => ast::ExprKind::Tuple(
             elements
                 .into_iter()
                 .map(|e| surface_to_core_inner(scope, e))
-                .collect(),
+                .collect::<Result<_, _>>()?,
         ),
         surface::ExprKind::Sequence(left, right) => {
-            let left_elabed = surface_to_core_inner(scope, *left);
+            let left_elabed = surface_to_core_inner(scope, *left)?;
             scope.push("");
             let right_span = right.span;
-            let right_elabed = surface_to_core_inner(scope, *right);
+            let right_elabed = surface_to_core_inner(scope, *right)?;
             scope.pop();
             ast::ExprKind::Application(
                 Box::new(ast::Expr {
@@ -143,9 +144,50 @@ fn surface_to_core_inner<'a>(scope: &mut Vec<&'a str>, expr: surface::Expr<'a>) 
             )
         }
     };
-    ast::Expr {
+    Ok(ast::Expr {
         kind,
         span: expr.span,
+    })
+}
+
+fn push_scope<'a>(
+    is_recursive: bool,
+    start: usize,
+    scope: &mut Vec<&'a str>,
+    pattern: &surface::Pattern<'a>,
+) -> Result<(usize, ast::Pattern), ElaborationError> {
+    match &pattern {
+        surface::Pattern::Wild(span) => {
+            scope.push("");
+            Ok((1, ast::Pattern::Wild(*span)))
+        }
+        surface::Pattern::Variable(span, n) => {
+            if !is_recursive && scope[start..].contains(n) {
+                Err(ElaborationError::MultipleBindings {
+                    x: n.to_string(),
+                    span: (*span).into(),
+                })
+            } else {
+                scope.push(n);
+                Ok((1, ast::Pattern::Variable(*span)))
+            }
+        }
+        surface::Pattern::Tuple(span, patterns) => {
+            if is_recursive {
+                Err(ElaborationError::DestructuredLetRec {
+                    span: (*span).into(),
+                })
+            } else {
+                let mut count = 0;
+                let mut pats = Vec::new();
+                for p in patterns {
+                    let (c, pat) = push_scope(false, start, scope, p)?;
+                    count += c;
+                    pats.push(pat);
+                }
+                Ok((count, ast::Pattern::Tuple(*span, pats)))
+            }
+        }
     }
 }
 
@@ -179,7 +221,7 @@ mod tests {
     use crate::parser::Parser;
 
     fn elab(source: &str) -> ast::Expr {
-        surface_to_core(Parser::parse(source).unwrap())
+        surface_to_core(Parser::parse(source).unwrap()).unwrap()
     }
 
     #[test]
@@ -210,5 +252,25 @@ mod tests {
             elab("a || b |> fun x => if x then 1 else 2").to_string(),
             "((λ.(if #0 then 1 else 2)) (|| a b))"
         );
+        assert_eq!(
+            elab("let (a, b, c) = (1, 2, 3); a + b + c").to_string(),
+            "(let (1, 2, 3) in (+ (+ #2 #1) #0))"
+        );
+        assert_eq!(
+            elab("let (a, _, b, _, c) = (1, 2, 3, 4, 5); a + b + c").to_string(),
+            "(let (1, 2, 3, 4, 5) in (+ (+ #4 #2) #0))"
+        );
+    }
+
+    #[test]
+    fn detects_bad_patterns() {
+        assert!(matches!(
+            surface_to_core(Parser::parse("let rec (x, y) = (1, 2); x + y").unwrap()),
+            Err(ElaborationError::DestructuredLetRec { .. })
+        ));
+        assert!(matches!(
+            surface_to_core(Parser::parse("let (x, y, x) = (1, 2, 3); x").unwrap()),
+            Err(ElaborationError::MultipleBindings { .. })
+        ));
     }
 }
