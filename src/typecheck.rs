@@ -175,6 +175,12 @@ pub enum TypeError {
         #[label("this term")]
         span: SourceSpan,
     },
+    #[error("cannot destructure in recursive let")]
+    #[diagnostic(code(typecheck::destructured_let_rec))]
+    DestructuredLetRec {
+        #[label("cannot destructure here")]
+        span: SourceSpan,
+    },
 }
 
 type Result<T> = std::result::Result<T, TypeError>;
@@ -296,19 +302,53 @@ impl TypeChecker {
     ) -> Result<TypeExpr> {
         self.current_level += 1;
         let t_prime = self.algorithm_j(expr)?;
+        let mut leaves = Vec::new();
+        self.unify_let_bindings(pattern, &t_prime, &mut leaves)?;
         self.current_level -= 1;
-        let t_prime_gen = self.generalize(t_prime);
-        if let Some(var_span) = match pattern {
-            ast::Pattern::Variable(span) => Some(span),
-            ast::Pattern::Wild(_) => None,
-            ast::Pattern::Tuple(_, _) => todo!(),
-        } {
-            self.bindings.push((*var_span, t_prime_gen.clone()));
+        let pop_count = leaves.len();
+        for (span, t) in leaves {
+            let t_gen = self.generalize(t);
+            self.bindings.push((span, t_gen.clone()));
+            self.context.push(t_gen);
         }
-        self.context.push(t_prime_gen);
         let t = self.algorithm_j(body)?;
-        self.context.pop();
+        for _ in 0..pop_count {
+            self.context.pop();
+        }
         Ok(t)
+    }
+
+    fn unify_let_bindings(
+        &mut self,
+        pattern: &ast::Pattern,
+        tp: &TypeExpr,
+        out: &mut Vec<(ast::Span, TypeExpr)>,
+    ) -> Result<()> {
+        match (pattern, tp) {
+            (ast::Pattern::Wild(span) | ast::Pattern::Variable(span), t) => {
+                out.push((*span, (*t).clone()));
+                Ok(())
+            }
+            (ast::Pattern::Tuple(span, patterns), TypeExpr::Product(elts))
+                if patterns.len() == elts.len() =>
+            {
+                for (p, t) in patterns.iter().zip(elts.iter()) {
+                    self.unify_let_bindings(p, t, out)?;
+                }
+                Ok(())
+            }
+            (ast::Pattern::Tuple(span, patterns), t) => {
+                let fresh: Vec<TypeExpr> = patterns
+                    .iter()
+                    .map(|_| self.new_unification_variable(false))
+                    .collect();
+                self.unify(*span, TypeExpr::Product(fresh.clone().into()), t.clone())?;
+                for (p, v) in patterns.iter().zip(&fresh) {
+                    self.unify_let_bindings(p, v, out)?;
+                }
+                Ok(())
+            }
+        }
     }
 
     fn rule_let_rec(
@@ -326,12 +366,16 @@ impl TypeChecker {
         self.unify(span, t_prime.clone(), t1)?;
         self.current_level -= 1;
         let t_prime_gen = self.generalize(t_prime);
-        if let Some(var_span) = match pattern {
-            ast::Pattern::Variable(span) => Some(span),
-            ast::Pattern::Wild(_) => None,
-            ast::Pattern::Tuple(_, _) => todo!(),
-        } {
-            self.bindings.push((*var_span, t_prime_gen.clone()));
+        match pattern {
+            ast::Pattern::Wild(_) => {}
+            ast::Pattern::Variable(span) => {
+                self.bindings.push((*span, t_prime_gen.clone()));
+            }
+            ast::Pattern::Tuple(span, _) => {
+                return Err(TypeError::DestructuredLetRec {
+                    span: (*span).into(),
+                });
+            }
         }
         self.context.push(t_prime_gen);
         let t = self.algorithm_j(body)?;
@@ -469,6 +513,12 @@ impl TypeChecker {
                 self.unify(span, (*ss).clone(), (*ts).clone())?;
                 self.unify(span, (*st).clone(), (*tt).clone())
             }
+            (TypeExpr::Product(ls), TypeExpr::Product(rs)) if ls.len() == rs.len() => {
+                for (l, r) in ls.iter().zip(rs.iter()) {
+                    self.unify(span, (*l).clone(), (*r).clone())?;
+                }
+                Ok(())
+            }
             (TypeExpr::UnifVar(l_id), TypeExpr::UnifVar(r_id)) => {
                 if l_id == r_id {
                     return Ok(());
@@ -507,8 +557,8 @@ impl TypeChecker {
             }
             (l, r) if l == r => Ok(()),
             (l, r) => Err(TypeError::Unification {
-                left: self.resolve(l).to_string(),
-                right: self.resolve(r).to_string(),
+                left: l.to_string(),
+                right: r.to_string(),
                 span: span.into(),
             }),
         }
@@ -748,6 +798,26 @@ mod tests {
             "(∀α.α -> (Int × α))"
         );
         assert_eq!(check("(1, 2) == (3, 4)").unwrap(), "Bool");
+        assert_eq!(
+            check("let (x, y) = (1, 2); (x, y) == (3, 4)").unwrap(),
+            "Bool"
+        );
+        assert_eq!(
+            check("let (x, (y, z)) = (1, (2, 3)); x + y - z").unwrap(),
+            "Int"
+        );
+        assert_eq!(
+            check("let f = (fun x => let (y, z) = x; z); f").unwrap(),
+            "(∀α.∀β.(α × β) -> β)"
+        );
+        assert_eq!(
+            check("let f = fun x => x; (f 1, f \"a\")").unwrap(),
+            "(Int × String)"
+        );
+        assert_eq!(
+            check("let (f, n) = (fun x => x, 1); (f 1, f \"a\")").unwrap(),
+            "(Int × String)"
+        );
     }
 
     #[test]
