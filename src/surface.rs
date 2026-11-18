@@ -47,18 +47,40 @@ impl Display for BinaryOp {
     }
 }
 
-pub enum Pattern<'a> {
-    Wild(Span),
-    Variable(Span, &'a str),
-    Tuple(Span, Vec<Pattern<'a>>),
+pub enum Literal<'a> {
+    Unit,
+    Bool(bool),
+    Char(char),
+    Int(i64),
+    String(&'a str),
 }
 
-impl Display for Pattern<'_> {
+impl Display for Literal<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Wild(_) => write!(f, "_"),
-            Self::Variable(_, x) => write!(f, "{x}"),
-            Self::Tuple(_, patterns) => {
+            Self::Unit => write!(f, "()"),
+            Self::Bool(b) => write!(f, "{b}"),
+            Self::Char(c) => write!(f, "'{}'", escape_str(&c.to_string(), '\'')),
+            Self::Int(n) => write!(f, "{n}"),
+            Self::String(s) => write!(f, "\"{s}\""),
+        }
+    }
+}
+
+pub enum PatternKind<'a> {
+    Literal(Literal<'a>),
+    Wild,
+    Variable(&'a str),
+    Tuple(Vec<Pattern<'a>>),
+}
+
+impl Display for PatternKind<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Literal(lit) => lit.fmt(f),
+            Self::Wild => write!(f, "_"),
+            Self::Variable(x) => write!(f, "{x}"),
+            Self::Tuple(patterns) => {
                 write!(f, "(")?;
                 for (i, p) in patterns.iter().enumerate() {
                     if i > 0 {
@@ -72,17 +94,24 @@ impl Display for Pattern<'_> {
     }
 }
 
+pub struct Pattern<'a> {
+    pub kind: PatternKind<'a>,
+    pub span: Span,
+}
+
+impl Display for Pattern<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.kind.fmt(f)
+    }
+}
+
 pub struct Identifier<'a> {
     pub name: &'a str,
     pub span: Span,
 }
 
 pub enum ExprKind<'a> {
-    Unit,
-    Bool(bool),
-    Char(char),
-    Int(i64),
-    String(&'a str),
+    Literal(Literal<'a>),
     Variable(&'a str),
     Application(Box<Expr<'a>>, Box<Expr<'a>>),
     Abstraction(Vec<Identifier<'a>>, Box<Expr<'a>>),
@@ -97,11 +126,7 @@ pub enum ExprKind<'a> {
 impl Display for ExprKind<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ExprKind::Unit => write!(f, "()"),
-            ExprKind::Bool(b) => write!(f, "{b}"),
-            ExprKind::Char(c) => write!(f, "'{}'", escape_str(&c.to_string(), '\'')),
-            ExprKind::Int(n) => write!(f, "{n}"),
-            ExprKind::String(s) => write!(f, "\"{s}\""),
+            ExprKind::Literal(lit) => lit.fmt(f),
             ExprKind::Variable(x) => write!(f, "{x}"),
             ExprKind::Application(left, right) => write!(f, "({left} {right})"),
             ExprKind::Abstraction(xs, body) => {

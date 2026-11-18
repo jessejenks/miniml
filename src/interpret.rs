@@ -1,9 +1,9 @@
 use crate::ast;
-use crate::lexer::escape_str;
 use std::fmt::Display;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Pattern {
+    Literal(ast::Literal),
     Wild,
     Variable,
     Tuple(Vec<Pattern>),
@@ -11,11 +11,7 @@ pub enum Pattern {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
-    Unit,
-    Bool(bool),
-    Char(char),
-    Int(i64),
-    String(String),
+    Literal(ast::Literal),
     BoundVariable(i64),
     FreeVariable(String),
     Application(Box<Expr>, Box<Expr>),
@@ -30,11 +26,7 @@ pub enum Expr {
 impl Display for Expr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Expr::Unit => write!(f, "()"),
-            Expr::Bool(b) => write!(f, "{b}"),
-            Expr::Char(c) => write!(f, "'{}'", escape_str(&c.to_string(), '\'')),
-            Expr::Int(n) => write!(f, "{n}"),
-            Expr::String(s) => write!(f, "\"{}\"", escape_str(s, '"')),
+            Expr::Literal(lit) => lit.fmt(f),
             Expr::FreeVariable(x) => write!(f, "{x}"),
             Expr::BoundVariable(i) => write!(f, "#{i}"),
             Expr::Application(left, right) => write!(f, "({left} {right})"),
@@ -65,11 +57,7 @@ impl Display for Expr {
 
 fn to_spanless(expr: &ast::Expr) -> Expr {
     match &expr.kind {
-        ast::ExprKind::Unit => Expr::Unit,
-        ast::ExprKind::Bool(b) => Expr::Bool(*b),
-        ast::ExprKind::Char(c) => Expr::Char(*c),
-        ast::ExprKind::Int(n) => Expr::Int(*n),
-        ast::ExprKind::String(s) => Expr::String(s.clone()),
+        ast::ExprKind::Literal(lit) => Expr::Literal(lit.clone()),
         ast::ExprKind::BoundVariable(i) => Expr::BoundVariable(*i),
         ast::ExprKind::FreeVariable(x) => Expr::FreeVariable(x.clone()),
         ast::ExprKind::Application(left, right) => {
@@ -98,10 +86,11 @@ fn to_spanless(expr: &ast::Expr) -> Expr {
 }
 
 fn to_spanless_pattern(pattern: &ast::Pattern) -> Pattern {
-    match pattern {
-        ast::Pattern::Wild(_) => Pattern::Wild,
-        ast::Pattern::Variable(_) => Pattern::Variable,
-        ast::Pattern::Tuple(_, patterns) => {
+    match &pattern.kind {
+        ast::PatternKind::Literal(lit) => Pattern::Literal(lit.clone()),
+        ast::PatternKind::Wild => Pattern::Wild,
+        ast::PatternKind::Variable => Pattern::Variable,
+        ast::PatternKind::Tuple(patterns) => {
             Pattern::Tuple(patterns.iter().map(to_spanless_pattern).collect())
         }
     }
@@ -109,6 +98,7 @@ fn to_spanless_pattern(pattern: &ast::Pattern) -> Pattern {
 
 fn leaf_count(pattern: &Pattern) -> i64 {
     match pattern {
+        Pattern::Literal(_) => 0,
         Pattern::Wild | Pattern::Variable => 1,
         Pattern::Tuple(patterns) => patterns.iter().fold(0, |acc, curr| acc + leaf_count(curr)),
     }
@@ -132,12 +122,7 @@ fn get_leaves(pattern: &Pattern, value: &Expr, out: &mut Vec<Expr>) -> bool {
 
 fn shift(i: i64, c: i64, expr: Expr) -> Expr {
     match expr {
-        Expr::Unit
-        | Expr::Bool(_)
-        | Expr::Char(_)
-        | Expr::Int(_)
-        | Expr::String(_)
-        | Expr::FreeVariable(_) => expr,
+        Expr::Literal(_) | Expr::FreeVariable(_) => expr,
         Expr::BoundVariable(index) => {
             if index < c {
                 expr
@@ -177,12 +162,7 @@ fn shift(i: i64, c: i64, expr: Expr) -> Expr {
 
 fn substitute(t: Expr, n: i64, expr: Expr) -> Expr {
     match t {
-        Expr::Unit
-        | Expr::Bool(_)
-        | Expr::Char(_)
-        | Expr::Int(_)
-        | Expr::String(_)
-        | Expr::FreeVariable(_) => t,
+        Expr::Literal(_) | Expr::FreeVariable(_) => t,
         Expr::BoundVariable(index) => {
             if index == n {
                 expr
@@ -255,15 +235,25 @@ fn cbv(expr: Expr) -> Expr {
             match left_val {
                 Expr::Abstraction(body) => cbv(beta(*body, right_val)),
                 Expr::FreeVariable(name) => match (name.as_str(), right_val) {
-                    ("print", Expr::String(s)) => {
+                    ("print", Expr::Literal(ast::Literal::String(s))) => {
                         println!("{s}");
-                        Expr::Unit
+                        Expr::Literal(ast::Literal::Unit)
                     }
-                    ("len", Expr::String(s)) => Expr::Int(s.len().try_into().unwrap()),
-                    ("unitToStr", Expr::Unit) => Expr::String("()".to_string()),
-                    ("boolToStr", Expr::Bool(b)) => Expr::String(format!("{b}")),
-                    ("charToStr", Expr::Char(c)) => Expr::String(format!("{c}")),
-                    ("intToStr", Expr::Int(n)) => Expr::String(format!("{n}")),
+                    ("len", Expr::Literal(ast::Literal::String(s))) => {
+                        Expr::Literal(ast::Literal::Int(s.len().try_into().unwrap()))
+                    }
+                    ("unitToStr", Expr::Literal(ast::Literal::Unit)) => {
+                        Expr::Literal(ast::Literal::String("()".to_string()))
+                    }
+                    ("boolToStr", Expr::Literal(ast::Literal::Bool(b))) => {
+                        Expr::Literal(ast::Literal::String(format!("{b}")))
+                    }
+                    ("charToStr", Expr::Literal(ast::Literal::Char(c))) => {
+                        Expr::Literal(ast::Literal::String(format!("{c}")))
+                    }
+                    ("intToStr", Expr::Literal(ast::Literal::Int(n))) => {
+                        Expr::Literal(ast::Literal::String(format!("{n}")))
+                    }
                     (_, r) => stuck_application(Expr::FreeVariable(name), r),
                 },
                 l => stuck_application(l, right_val),
@@ -299,7 +289,7 @@ fn cbv(expr: Expr) -> Expr {
         }
         Expr::IfElse(condition, consequence, alternative) => {
             let cond = cbv(*condition);
-            if let Expr::Bool(b) = cond {
+            if let Expr::Literal(ast::Literal::Bool(b)) = cond {
                 // iota
                 cbv(if b { *consequence } else { *alternative })
             } else {
@@ -309,9 +299,15 @@ fn cbv(expr: Expr) -> Expr {
         Expr::Unary(op, expr) => {
             let child = cbv(*expr);
             match (op, child) {
-                (ast::UnaryOp::Negate, Expr::Int(n)) => Expr::Int(-n),
-                (ast::UnaryOp::BitNot, Expr::Int(n)) => Expr::Int(-1 ^ n),
-                (ast::UnaryOp::Not, Expr::Bool(b)) => Expr::Bool(!b),
+                (ast::UnaryOp::Negate, Expr::Literal(ast::Literal::Int(n))) => {
+                    Expr::Literal(ast::Literal::Int(-n))
+                }
+                (ast::UnaryOp::BitNot, Expr::Literal(ast::Literal::Int(n))) => {
+                    Expr::Literal(ast::Literal::Int(-1 ^ n))
+                }
+                (ast::UnaryOp::Not, Expr::Literal(ast::Literal::Bool(b))) => {
+                    Expr::Literal(ast::Literal::Bool(!b))
+                }
                 (o, c) => Expr::Unary(o, Box::new(c)),
             }
         }
@@ -319,35 +315,109 @@ fn cbv(expr: Expr) -> Expr {
             let l_child = cbv(*left);
             // short-circuiting
             match (op, &l_child) {
-                (ast::BinaryOp::And, Expr::Bool(false)) => {
-                    return Expr::Bool(false);
+                (ast::BinaryOp::And, Expr::Literal(ast::Literal::Bool(false))) => {
+                    return Expr::Literal(ast::Literal::Bool(false));
                 }
-                (ast::BinaryOp::Or, Expr::Bool(true)) => {
-                    return Expr::Bool(true);
+                (ast::BinaryOp::Or, Expr::Literal(ast::Literal::Bool(true))) => {
+                    return Expr::Literal(ast::Literal::Bool(true));
                 }
                 _ => {}
             }
             let r_child = cbv(*right);
             match (op, l_child, r_child) {
-                (ast::BinaryOp::Add, Expr::Int(a), Expr::Int(b)) => Expr::Int(a + b),
-                (ast::BinaryOp::Sub, Expr::Int(a), Expr::Int(b)) => Expr::Int(a - b),
-                (ast::BinaryOp::Mul, Expr::Int(a), Expr::Int(b)) => Expr::Int(a * b),
-                (ast::BinaryOp::Div, Expr::Int(a), Expr::Int(b)) if b != 0 => Expr::Int(a / b),
-                (ast::BinaryOp::Lt, Expr::Int(a), Expr::Int(b)) => Expr::Bool(a < b),
-                (ast::BinaryOp::Gt, Expr::Int(a), Expr::Int(b)) => Expr::Bool(a > b),
-                (ast::BinaryOp::Lte, Expr::Int(a), Expr::Int(b)) => Expr::Bool(a <= b),
-                (ast::BinaryOp::Gte, Expr::Int(a), Expr::Int(b)) => Expr::Bool(a >= b),
-                (ast::BinaryOp::Eq, Expr::Unit, Expr::Unit) => Expr::Bool(true),
-                (ast::BinaryOp::Eq, Expr::Bool(a), Expr::Bool(b)) => Expr::Bool(a == b),
-                (ast::BinaryOp::Eq, Expr::Char(a), Expr::Char(b)) => Expr::Bool(a == b),
-                (ast::BinaryOp::Eq, Expr::Int(a), Expr::Int(b)) => Expr::Bool(a == b),
-                (ast::BinaryOp::Eq, Expr::String(a), Expr::String(b)) => Expr::Bool(a == b),
-                (ast::BinaryOp::Eq, Expr::Tuple(a), Expr::Tuple(b)) => Expr::Bool(a == b),
-                (ast::BinaryOp::Concat, Expr::String(a), Expr::String(b)) => Expr::String(a + &b),
-                (ast::BinaryOp::BitAnd, Expr::Int(a), Expr::Int(b)) => Expr::Int(a & b),
-                (ast::BinaryOp::BitOr, Expr::Int(a), Expr::Int(b)) => Expr::Int(a | b),
-                (ast::BinaryOp::And, Expr::Bool(a), Expr::Bool(b)) => Expr::Bool(a && b),
-                (ast::BinaryOp::Or, Expr::Bool(a), Expr::Bool(b)) => Expr::Bool(a || b),
+                (
+                    ast::BinaryOp::Add,
+                    Expr::Literal(ast::Literal::Int(a)),
+                    Expr::Literal(ast::Literal::Int(b)),
+                ) => Expr::Literal(ast::Literal::Int(a + b)),
+                (
+                    ast::BinaryOp::Sub,
+                    Expr::Literal(ast::Literal::Int(a)),
+                    Expr::Literal(ast::Literal::Int(b)),
+                ) => Expr::Literal(ast::Literal::Int(a - b)),
+                (
+                    ast::BinaryOp::Mul,
+                    Expr::Literal(ast::Literal::Int(a)),
+                    Expr::Literal(ast::Literal::Int(b)),
+                ) => Expr::Literal(ast::Literal::Int(a * b)),
+                (
+                    ast::BinaryOp::Div,
+                    Expr::Literal(ast::Literal::Int(a)),
+                    Expr::Literal(ast::Literal::Int(b)),
+                ) if b != 0 => Expr::Literal(ast::Literal::Int(a / b)),
+                (
+                    ast::BinaryOp::Lt,
+                    Expr::Literal(ast::Literal::Int(a)),
+                    Expr::Literal(ast::Literal::Int(b)),
+                ) => Expr::Literal(ast::Literal::Bool(a < b)),
+                (
+                    ast::BinaryOp::Gt,
+                    Expr::Literal(ast::Literal::Int(a)),
+                    Expr::Literal(ast::Literal::Int(b)),
+                ) => Expr::Literal(ast::Literal::Bool(a > b)),
+                (
+                    ast::BinaryOp::Lte,
+                    Expr::Literal(ast::Literal::Int(a)),
+                    Expr::Literal(ast::Literal::Int(b)),
+                ) => Expr::Literal(ast::Literal::Bool(a <= b)),
+                (
+                    ast::BinaryOp::Gte,
+                    Expr::Literal(ast::Literal::Int(a)),
+                    Expr::Literal(ast::Literal::Int(b)),
+                ) => Expr::Literal(ast::Literal::Bool(a >= b)),
+                (
+                    ast::BinaryOp::Eq,
+                    Expr::Literal(ast::Literal::Unit),
+                    Expr::Literal(ast::Literal::Unit),
+                ) => Expr::Literal(ast::Literal::Bool(true)),
+                (
+                    ast::BinaryOp::Eq,
+                    Expr::Literal(ast::Literal::Bool(a)),
+                    Expr::Literal(ast::Literal::Bool(b)),
+                ) => Expr::Literal(ast::Literal::Bool(a == b)),
+                (
+                    ast::BinaryOp::Eq,
+                    Expr::Literal(ast::Literal::Char(a)),
+                    Expr::Literal(ast::Literal::Char(b)),
+                ) => Expr::Literal(ast::Literal::Bool(a == b)),
+                (
+                    ast::BinaryOp::Eq,
+                    Expr::Literal(ast::Literal::Int(a)),
+                    Expr::Literal(ast::Literal::Int(b)),
+                ) => Expr::Literal(ast::Literal::Bool(a == b)),
+                (
+                    ast::BinaryOp::Eq,
+                    Expr::Literal(ast::Literal::String(a)),
+                    Expr::Literal(ast::Literal::String(b)),
+                ) => Expr::Literal(ast::Literal::Bool(a == b)),
+                (ast::BinaryOp::Eq, Expr::Tuple(a), Expr::Tuple(b)) => {
+                    Expr::Literal(ast::Literal::Bool(a == b))
+                }
+                (
+                    ast::BinaryOp::Concat,
+                    Expr::Literal(ast::Literal::String(a)),
+                    Expr::Literal(ast::Literal::String(b)),
+                ) => Expr::Literal(ast::Literal::String(a + &b)),
+                (
+                    ast::BinaryOp::BitAnd,
+                    Expr::Literal(ast::Literal::Int(a)),
+                    Expr::Literal(ast::Literal::Int(b)),
+                ) => Expr::Literal(ast::Literal::Int(a & b)),
+                (
+                    ast::BinaryOp::BitOr,
+                    Expr::Literal(ast::Literal::Int(a)),
+                    Expr::Literal(ast::Literal::Int(b)),
+                ) => Expr::Literal(ast::Literal::Int(a | b)),
+                (
+                    ast::BinaryOp::And,
+                    Expr::Literal(ast::Literal::Bool(a)),
+                    Expr::Literal(ast::Literal::Bool(b)),
+                ) => Expr::Literal(ast::Literal::Bool(a && b)),
+                (
+                    ast::BinaryOp::Or,
+                    Expr::Literal(ast::Literal::Bool(a)),
+                    Expr::Literal(ast::Literal::Bool(b)),
+                ) => Expr::Literal(ast::Literal::Bool(a || b)),
                 (op, l, r) => Expr::Binary(op, Box::new(l), Box::new(r)),
             }
         }

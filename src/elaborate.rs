@@ -32,11 +32,7 @@ fn surface_to_core_inner<'a>(
     expr: surface::Expr<'a>,
 ) -> Result<ast::Expr, ElaborationError> {
     let kind = match expr.kind {
-        surface::ExprKind::Unit => ast::ExprKind::Unit,
-        surface::ExprKind::Char(c) => ast::ExprKind::Char(c),
-        surface::ExprKind::Bool(b) => ast::ExprKind::Bool(b),
-        surface::ExprKind::Int(n) => ast::ExprKind::Int(n),
-        surface::ExprKind::String(s) => ast::ExprKind::String(lexer::unescape_str(s)),
+        surface::ExprKind::Literal(lit) => ast::ExprKind::Literal(surface_to_core_literal(&lit)),
         surface::ExprKind::Variable(x) => match scope.iter().rev().position(|&n| n == x) {
             Some(index) => ast::ExprKind::BoundVariable(i64::try_from(index).unwrap()),
             None => ast::ExprKind::FreeVariable(x.to_string()),
@@ -156,38 +152,56 @@ fn push_scope<'a>(
     scope: &mut Vec<&'a str>,
     pattern: &surface::Pattern<'a>,
 ) -> Result<(usize, ast::Pattern), ElaborationError> {
-    match &pattern {
-        surface::Pattern::Wild(span) => {
+    let (count, kind) = match &pattern.kind {
+        surface::PatternKind::Literal(lit) => {
+            (0, ast::PatternKind::Literal(surface_to_core_literal(lit)))
+        }
+        surface::PatternKind::Wild => {
             scope.push("");
-            Ok((1, ast::Pattern::Wild(*span)))
+            (1, ast::PatternKind::Wild)
         }
-        surface::Pattern::Variable(span, n) => {
+        surface::PatternKind::Variable(n) => {
             if !is_recursive && scope[start..].contains(n) {
-                Err(ElaborationError::MultipleBindings {
+                return Err(ElaborationError::MultipleBindings {
                     x: n.to_string(),
-                    span: (*span).into(),
-                })
-            } else {
-                scope.push(n);
-                Ok((1, ast::Pattern::Variable(*span)))
+                    span: pattern.span.into(),
+                });
             }
+            scope.push(n);
+            (1, ast::PatternKind::Variable)
         }
-        surface::Pattern::Tuple(span, patterns) => {
+        surface::PatternKind::Tuple(patterns) => {
             if is_recursive {
-                Err(ElaborationError::DestructuredLetRec {
-                    span: (*span).into(),
-                })
-            } else {
-                let mut count = 0;
-                let mut pats = Vec::new();
-                for p in patterns {
-                    let (c, pat) = push_scope(false, start, scope, p)?;
-                    count += c;
-                    pats.push(pat);
-                }
-                Ok((count, ast::Pattern::Tuple(*span, pats)))
+                return Err(ElaborationError::DestructuredLetRec {
+                    span: pattern.span.into(),
+                });
             }
+            let mut count = 0;
+            let mut pats = Vec::new();
+            for p in patterns {
+                let (c, pat) = push_scope(false, start, scope, p)?;
+                count += c;
+                pats.push(pat);
+            }
+            (count, ast::PatternKind::Tuple(pats))
         }
+    };
+    Ok((
+        count,
+        ast::Pattern {
+            kind,
+            span: pattern.span,
+        },
+    ))
+}
+
+fn surface_to_core_literal(lit: &surface::Literal) -> ast::Literal {
+    match lit {
+        surface::Literal::Unit => ast::Literal::Unit,
+        surface::Literal::Char(c) => ast::Literal::Char(*c),
+        surface::Literal::Bool(b) => ast::Literal::Bool(*b),
+        surface::Literal::Int(n) => ast::Literal::Int(*n),
+        surface::Literal::String(s) => ast::Literal::String(lexer::unescape_str(s)),
     }
 }
 

@@ -6,13 +6,9 @@ use crate::{ast, codegen::Tag};
 impl<'ctx> Compiler<'ctx> {
     pub(super) fn compile_expression(&mut self, expr: &ast::Expr) -> Result<IntValue<'ctx>> {
         match &expr.kind {
-            ast::ExprKind::Unit
-            | ast::ExprKind::Bool(_)
-            | ast::ExprKind::Char(_)
-            | ast::ExprKind::Int(_)
-            | ast::ExprKind::String(_)
-            | ast::ExprKind::Unary(..)
-            | ast::ExprKind::Binary(..) => self.compile_primitive(expr),
+            ast::ExprKind::Literal(_) | ast::ExprKind::Unary(..) | ast::ExprKind::Binary(..) => {
+                self.compile_primitive(expr)
+            }
             ast::ExprKind::BoundVariable(n) => self.access(*n),
             ast::ExprKind::FreeVariable(name) => self.free_variable(name, expr.span),
             ast::ExprKind::Application(left, right) => {
@@ -71,11 +67,7 @@ impl<'ctx> Compiler<'ctx> {
 
     fn compile_expression_tail(&mut self, expr: &ast::Expr) -> Result<()> {
         match &expr.kind {
-            ast::ExprKind::Unit
-            | ast::ExprKind::Bool(_)
-            | ast::ExprKind::Char(_)
-            | ast::ExprKind::Int(_)
-            | ast::ExprKind::String(_)
+            ast::ExprKind::Literal(_)
             | ast::ExprKind::Unary(..)
             | ast::ExprKind::Binary(..)
             | ast::ExprKind::BoundVariable(_)
@@ -126,12 +118,13 @@ impl<'ctx> Compiler<'ctx> {
     }
 
     fn bind_pattern(&mut self, pattern: &ast::Pattern, value: IntValue<'ctx>) -> Result<usize> {
-        match pattern {
-            ast::Pattern::Wild(_) | ast::Pattern::Variable(_) => {
+        match &pattern.kind {
+            ast::PatternKind::Literal(_) => Ok(0),
+            ast::PatternKind::Wild | ast::PatternKind::Variable => {
                 self.let_in(value)?;
                 Ok(1)
             }
-            ast::Pattern::Tuple(_, patterns) => {
+            ast::PatternKind::Tuple(patterns) => {
                 let ptr = self
                     .builder
                     .build_int_to_ptr(value, self.ptr_type, "tuple")?;
@@ -158,11 +151,11 @@ impl<'ctx> Compiler<'ctx> {
 
     fn compile_primitive(&mut self, expr: &ast::Expr) -> Result<IntValue<'ctx>> {
         match &expr.kind {
-            ast::ExprKind::Unit => self.box_const(0),
-            ast::ExprKind::Bool(b) => self.box_const(i64::from(*b)),
-            ast::ExprKind::Char(c) => self.box_const(*c as i64),
-            ast::ExprKind::Int(n) => self.box_const(*n),
-            ast::ExprKind::String(s) => self.compile_string(s),
+            ast::ExprKind::Literal(ast::Literal::Unit) => self.box_const(0),
+            ast::ExprKind::Literal(ast::Literal::Bool(b)) => self.box_const(i64::from(*b)),
+            ast::ExprKind::Literal(ast::Literal::Char(c)) => self.box_const(*c as i64),
+            ast::ExprKind::Literal(ast::Literal::Int(n)) => self.box_const(*n),
+            ast::ExprKind::Literal(ast::Literal::String(s)) => self.compile_string(s),
             ast::ExprKind::Unary(op, expr) => {
                 let value = self.compile_expression(expr)?;
                 let value = self.unbox_int(value)?;
@@ -356,10 +349,12 @@ impl<'ctx> Compiler<'ctx> {
     fn is_immediate(e: &ast::Expr) -> bool {
         matches!(
             e.kind,
-            ast::ExprKind::Unit
-                | ast::ExprKind::Bool(_)
-                | ast::ExprKind::Char(_)
-                | ast::ExprKind::Int(_)
+            ast::ExprKind::Literal(
+                ast::Literal::Unit
+                    | ast::Literal::Bool(_)
+                    | ast::Literal::Char(_)
+                    | ast::Literal::Int(_)
+            )
         )
     }
 }

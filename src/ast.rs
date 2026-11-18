@@ -87,20 +87,44 @@ impl Display for BinaryOp {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum Pattern {
-    Wild(Span),
-    Variable(Span),
-    Tuple(Span, Vec<Pattern>),
-}
-
-#[derive(Debug, PartialEq)]
-pub enum ExprKind {
+#[derive(Debug, PartialEq, Clone)]
+pub enum Literal {
     Unit,
     Bool(bool),
     Char(char),
     Int(i64),
     String(String),
+}
+
+impl Display for Literal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unit => write!(f, "()"),
+            Self::Bool(b) => write!(f, "{b}"),
+            Self::Char(c) => write!(f, "'{}'", escape_str(&c.to_string(), '\'')),
+            Self::Int(n) => write!(f, "{n}"),
+            Self::String(s) => write!(f, "\"{}\"", escape_str(s, '"')),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum PatternKind {
+    Literal(Literal),
+    Wild,
+    Variable,
+    Tuple(Vec<Pattern>),
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Pattern {
+    pub kind: PatternKind,
+    pub span: Span,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ExprKind {
+    Literal(Literal),
     BoundVariable(i64),
     FreeVariable(String),
     Application(Box<Expr>, Box<Expr>),
@@ -115,11 +139,7 @@ pub enum ExprKind {
 impl Display for ExprKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ExprKind::Unit => write!(f, "()"),
-            ExprKind::Bool(b) => write!(f, "{b}"),
-            ExprKind::Char(c) => write!(f, "'{}'", escape_str(&c.to_string(), '\'')),
-            ExprKind::Int(n) => write!(f, "{n}"),
-            ExprKind::String(s) => write!(f, "\"{}\"", escape_str(s, '"')),
+            ExprKind::Literal(lit) => lit.fmt(f),
             ExprKind::FreeVariable(x) => write!(f, "{x}"),
             ExprKind::BoundVariable(i) => write!(f, "#{i}"),
             ExprKind::Application(left, right) => write!(f, "({left} {right})"),

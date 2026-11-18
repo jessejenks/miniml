@@ -169,7 +169,11 @@ impl<'a> Parser<'a> {
 
     fn block_body(&mut self, start: usize) -> Result<surface::Expr<'a>, ParseError> {
         if matches!(self.peek()?, None | Some((_, Token::RBrace, _))) {
-            return Ok(surface::Expr::new(surface::ExprKind::Unit, start, start));
+            return Ok(surface::Expr::new(
+                surface::ExprKind::Literal(surface::Literal::Unit),
+                start,
+                start,
+            ));
         }
         if (self.chomp_if_next_is(Token::Keyword(Keyword::Let)))? {
             let (let_start, _, _) = self.prev_token.expect("just read `let`");
@@ -321,11 +325,31 @@ impl<'a> Parser<'a> {
         end: usize,
     ) -> Result<surface::Expr<'a>, ParseError> {
         match tok {
-            Token::Unit => Ok(surface::Expr::new(surface::ExprKind::Unit, start, end)),
-            Token::Bool(b) => Ok(surface::Expr::new(surface::ExprKind::Bool(b), start, end)),
-            Token::Char(c) => Ok(surface::Expr::new(surface::ExprKind::Char(c), start, end)),
-            Token::Int(n) => Ok(surface::Expr::new(surface::ExprKind::Int(n), start, end)),
-            Token::String(s) => Ok(surface::Expr::new(surface::ExprKind::String(s), start, end)),
+            Token::Unit => Ok(surface::Expr::new(
+                surface::ExprKind::Literal(surface::Literal::Unit),
+                start,
+                end,
+            )),
+            Token::Bool(b) => Ok(surface::Expr::new(
+                surface::ExprKind::Literal(surface::Literal::Bool(b)),
+                start,
+                end,
+            )),
+            Token::Char(c) => Ok(surface::Expr::new(
+                surface::ExprKind::Literal(surface::Literal::Char(c)),
+                start,
+                end,
+            )),
+            Token::Int(n) => Ok(surface::Expr::new(
+                surface::ExprKind::Literal(surface::Literal::Int(n)),
+                start,
+                end,
+            )),
+            Token::String(s) => Ok(surface::Expr::new(
+                surface::ExprKind::Literal(surface::Literal::String(s)),
+                start,
+                end,
+            )),
             Token::Identifier(x) => Ok(surface::Expr::new(
                 surface::ExprKind::Variable(x),
                 start,
@@ -414,9 +438,35 @@ impl<'a> Parser<'a> {
 
     fn pattern(&mut self) -> Result<surface::Pattern<'a>, ParseError> {
         match self.next()? {
+            Some((start, Token::Unit, end)) => Ok(surface::Pattern {
+                kind: surface::PatternKind::Literal(surface::Literal::Unit),
+                span: (start..end).into(),
+            }),
+            Some((start, Token::Bool(b), end)) => Ok(surface::Pattern {
+                kind: surface::PatternKind::Literal(surface::Literal::Bool(b)),
+                span: (start..end).into(),
+            }),
+            Some((start, Token::Char(c), end)) => Ok(surface::Pattern {
+                kind: surface::PatternKind::Literal(surface::Literal::Char(c)),
+                span: (start..end).into(),
+            }),
+            Some((start, Token::Int(n), end)) => Ok(surface::Pattern {
+                kind: surface::PatternKind::Literal(surface::Literal::Int(n)),
+                span: (start..end).into(),
+            }),
+            Some((start, Token::String(s), end)) => Ok(surface::Pattern {
+                kind: surface::PatternKind::Literal(surface::Literal::String(s)),
+                span: (start..end).into(),
+            }),
             Some((start, Token::Identifier(x), end)) => match x {
-                "_" => Ok(surface::Pattern::Wild((start..end).into())),
-                x => Ok(surface::Pattern::Variable((start..end).into(), x)),
+                "_" => Ok(surface::Pattern {
+                    kind: surface::PatternKind::Wild,
+                    span: (start..end).into(),
+                }),
+                x => Ok(surface::Pattern {
+                    kind: surface::PatternKind::Variable(x),
+                    span: (start..end).into(),
+                }),
             },
             Some((start, Token::LParen, _)) => {
                 let mut elements = vec![self.pattern()?];
@@ -426,11 +476,14 @@ impl<'a> Parser<'a> {
                     elements.push(self.pattern()?);
                 }
                 let (_, _, end) = self.expect(Token::RParen)?;
-                Ok(surface::Pattern::Tuple((start..end).into(), elements))
+                Ok(surface::Pattern {
+                    kind: surface::PatternKind::Tuple(elements),
+                    span: (start..end).into(),
+                })
             }
             Some((start, tok, end)) => Err(ParseError::UnexpectedTokenExpecting {
                 actual: format!("{tok:?}"),
-                expected: "_, variable, or tuple".to_string(),
+                expected: "pattern".to_string(),
                 span: (start..end).into(),
             }),
             None => Err(self.eof_error()),
@@ -508,13 +561,22 @@ mod tests {
 
     #[test]
     fn parses_literals() {
-        assert!(matches!(parse("()").kind, surface::ExprKind::Unit));
-        assert!(matches!(parse("true").kind, surface::ExprKind::Bool(true)));
+        assert!(matches!(
+            parse("()").kind,
+            surface::ExprKind::Literal(surface::Literal::Unit)
+        ));
+        assert!(matches!(
+            parse("true").kind,
+            surface::ExprKind::Literal(surface::Literal::Bool(true))
+        ));
         assert!(matches!(
             parse("false").kind,
-            surface::ExprKind::Bool(false)
+            surface::ExprKind::Literal(surface::Literal::Bool(false))
         ));
-        assert!(matches!(parse("1").kind, surface::ExprKind::Int(1)));
+        assert!(matches!(
+            parse("1").kind,
+            surface::ExprKind::Literal(surface::Literal::Int(1))
+        ));
         assert!(matches!(parse("x").kind, surface::ExprKind::Variable("x")));
         assert!(matches!(
             parse("x_y").kind,
@@ -524,10 +586,13 @@ mod tests {
             parse("x'''").kind,
             surface::ExprKind::Variable("x'''")
         ));
-        assert!(matches!(parse("'a'").kind, surface::ExprKind::Char('a')));
+        assert!(matches!(
+            parse("'a'").kind,
+            surface::ExprKind::Literal(surface::Literal::Char('a'))
+        ));
         assert!(matches!(
             parse(r#""hi""#).kind,
-            surface::ExprKind::String("hi")
+            surface::ExprKind::Literal(surface::Literal::String("hi"))
         ));
     }
 
@@ -673,16 +738,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn basic_syntax_errors() {
-        let err = parse_err("let 1 = x");
-        let ParseError::UnexpectedTokenExpecting { actual, span, .. } = err else {
-            panic!("wrong error: {err:?}");
-        };
-        assert_eq!(actual, "Int(1)");
-        assert_eq!(span, SourceSpan::from(4..5));
-    }
-
     #[track_caller]
     fn assert_expecting(source: &str, actual: &str, expected: &str, span: std::ops::Range<usize>) {
         let err = parse_err(source);
@@ -727,7 +782,7 @@ mod tests {
     #[test]
     fn bad_binders() {
         assert_expecting("let x 1", "Int(1)", "Equal", 6..7);
-        assert_expecting("let let = 1", "Keyword(Let)", "_, variable, or tuple", 4..7);
+        assert_expecting("let let = 1", "Keyword(Let)", "pattern", 4..7);
         assert_expecting("fun x x", "Identifier(\"x\")", "WideArrow", 6..7);
         assert_eof("fun x =>");
     }
@@ -806,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn detects_mixed_pips() {
+    fn detects_mixed_pipes() {
         for (source, first, first_span, second, second_span) in [
             ("x |> f <| ", "|>", 2..4, "<|", 7..9),
             ("f <| x |> g ", "<|", 2..4, "|>", 7..9),

@@ -225,11 +225,7 @@ impl TypeChecker {
 
     fn algorithm_j(&mut self, expr: &ast::Expr) -> Result<TypeExpr> {
         match &expr.kind {
-            ast::ExprKind::Unit => Ok(TypeExpr::Unit),
-            ast::ExprKind::Bool(_) => Ok(TypeExpr::Bool),
-            ast::ExprKind::Char(_) => Ok(TypeExpr::Char),
-            ast::ExprKind::Int(_) => Ok(TypeExpr::Int),
-            ast::ExprKind::String(_) => Ok(TypeExpr::String),
+            ast::ExprKind::Literal(lit) => Ok(Self::rule_lit(lit)),
             ast::ExprKind::BoundVariable(index) => self.rule_var(expr.span, *index),
             ast::ExprKind::FreeVariable(name) => self.rule_free_var(expr.span, name.clone()),
             ast::ExprKind::Application(left, right) => self.rule_app(expr.span, left, right),
@@ -244,6 +240,16 @@ impl TypeChecker {
             ast::ExprKind::Unary(op, e) => self.rule_unary(expr.span, *op, e),
             ast::ExprKind::Binary(op, left, right) => self.rule_binary(expr.span, *op, left, right),
             ast::ExprKind::Tuple(elements) => self.rule_tuple(elements),
+        }
+    }
+
+    fn rule_lit(lit: &ast::Literal) -> TypeExpr {
+        match lit {
+            ast::Literal::Unit => TypeExpr::Unit,
+            ast::Literal::Bool(_) => TypeExpr::Bool,
+            ast::Literal::Char(_) => TypeExpr::Char,
+            ast::Literal::Int(_) => TypeExpr::Int,
+            ast::Literal::String(_) => TypeExpr::String,
         }
     }
 
@@ -324,12 +330,13 @@ impl TypeChecker {
         tp: &TypeExpr,
         out: &mut Vec<(ast::Span, TypeExpr)>,
     ) -> Result<()> {
-        match (pattern, tp) {
-            (ast::Pattern::Wild(span) | ast::Pattern::Variable(span), t) => {
-                out.push((*span, (*t).clone()));
+        match (&pattern.kind, tp) {
+            (ast::PatternKind::Literal(_), _) => todo!(),
+            (ast::PatternKind::Wild | ast::PatternKind::Variable, t) => {
+                out.push((pattern.span, (*t).clone()));
                 Ok(())
             }
-            (ast::Pattern::Tuple(span, patterns), TypeExpr::Product(elts))
+            (ast::PatternKind::Tuple(patterns), TypeExpr::Product(elts))
                 if patterns.len() == elts.len() =>
             {
                 for (p, t) in patterns.iter().zip(elts.iter()) {
@@ -337,12 +344,16 @@ impl TypeChecker {
                 }
                 Ok(())
             }
-            (ast::Pattern::Tuple(span, patterns), t) => {
+            (ast::PatternKind::Tuple(patterns), t) => {
                 let fresh: Vec<TypeExpr> = patterns
                     .iter()
                     .map(|_| self.new_unification_variable(false))
                     .collect();
-                self.unify(*span, TypeExpr::Product(fresh.clone().into()), t.clone())?;
+                self.unify(
+                    pattern.span,
+                    TypeExpr::Product(fresh.clone().into()),
+                    t.clone(),
+                )?;
                 for (p, v) in patterns.iter().zip(&fresh) {
                     self.unify_let_bindings(p, v, out)?;
                 }
@@ -366,14 +377,19 @@ impl TypeChecker {
         self.unify(span, t_prime.clone(), t1)?;
         self.current_level -= 1;
         let t_prime_gen = self.generalize(t_prime);
-        match pattern {
-            ast::Pattern::Wild(_) => {}
-            ast::Pattern::Variable(span) => {
-                self.bindings.push((*span, t_prime_gen.clone()));
+        match &pattern.kind {
+            ast::PatternKind::Wild => {}
+            ast::PatternKind::Variable => {
+                self.bindings.push((pattern.span, t_prime_gen.clone()));
             }
-            ast::Pattern::Tuple(span, _) => {
+            ast::PatternKind::Literal(_) => {
+                return Err(TypeError::PatternContainsLiterals {
+                    span: pattern.span.into(),
+                });
+            }
+            ast::PatternKind::Tuple(_) => {
                 return Err(TypeError::DestructuredLetRec {
-                    span: (*span).into(),
+                    span: pattern.span.into(),
                 });
             }
         }

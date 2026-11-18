@@ -183,12 +183,12 @@ fn main() -> miette::Result<()> {
 }
 
 fn collect_spans(spans: &mut Vec<ast::Span>, pattern: &ast::Pattern) {
-    match pattern {
-        ast::Pattern::Wild(_) => {}
-        ast::Pattern::Variable(span) => {
-            spans.push(*span);
+    match &pattern.kind {
+        ast::PatternKind::Literal(_) | ast::PatternKind::Wild => {}
+        ast::PatternKind::Variable => {
+            spans.push(pattern.span);
         }
-        ast::Pattern::Tuple(_, patterns) => {
+        ast::PatternKind::Tuple(patterns) => {
             for p in patterns {
                 collect_spans(spans, p);
             }
