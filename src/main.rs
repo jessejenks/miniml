@@ -4,6 +4,7 @@ mod elaborate;
 mod interpret;
 mod lexer;
 mod parser;
+mod patternmatch;
 mod surface;
 mod typecheck;
 
@@ -35,6 +36,9 @@ struct Args {
     /// Print types for declarations
     #[arg(long, visible_alias = "interface", short = 'i')]
     types: bool,
+    /// Compile pattern matches in code (debug)
+    #[arg(long)]
+    patterns: bool,
     /// Run interpreter or codegen even if type check failed
     #[arg(long)]
     force: bool,
@@ -140,6 +144,12 @@ fn main() -> miette::Result<()> {
         }
         Ok(sch) => (result_kind(sch.tp()), format!("- : {sch} = ")),
     };
+
+    if args.patterns {
+        patternmatch::debug_pattern_matching(&elaborated_program, &source)
+            .map_err(|e| report(e, &args.path, &source))?;
+        return Ok(());
+    }
 
     if args.interpret {
         let interpreted = interpret(&elaborated_program);
