@@ -181,6 +181,18 @@ pub enum TypeError {
         #[label("cannot destructure here")]
         span: SourceSpan,
     },
+    #[error("this pattern cannot contain literal values")]
+    #[diagnostic(code(typecheck::pattern_contains_literals))]
+    PatternContainsLiterals {
+        #[label("cannot include literals here")]
+        span: SourceSpan,
+    },
+    #[error("arms of match must have same type")]
+    #[diagnostic(code(typecheck::match_arms))]
+    MatchArms {
+        #[label("this arm does not have the expected type")]
+        span: SourceSpan,
+    },
 }
 
 type Result<T> = std::result::Result<T, TypeError>;
@@ -240,7 +252,7 @@ impl TypeChecker {
             ast::ExprKind::Unary(op, e) => self.rule_unary(expr.span, *op, e),
             ast::ExprKind::Binary(op, left, right) => self.rule_binary(expr.span, *op, left, right),
             ast::ExprKind::Tuple(elements) => self.rule_tuple(elements),
-            ast::ExprKind::Match(_, _) => todo!(),
+            ast::ExprKind::Match(scrutinee, cases) => self.rule_match(scrutinee, cases),
         }
     }
 
@@ -310,7 +322,7 @@ impl TypeChecker {
         self.current_level += 1;
         let t_prime = self.algorithm_j(expr)?;
         let mut leaves = Vec::new();
-        self.unify_let_bindings(pattern, &t_prime, &mut leaves)?;
+        self.unify_pattern(true, pattern, &t_prime, &mut leaves)?;
         self.current_level -= 1;
         let pop_count = leaves.len();
         for (span, t) in leaves {
@@ -323,44 +335,6 @@ impl TypeChecker {
             self.context.pop();
         }
         Ok(t)
-    }
-
-    fn unify_let_bindings(
-        &mut self,
-        pattern: &ast::Pattern,
-        tp: &TypeExpr,
-        out: &mut Vec<(ast::Span, TypeExpr)>,
-    ) -> Result<()> {
-        match (&pattern.kind, tp) {
-            (ast::PatternKind::Literal(_), _) => todo!(),
-            (ast::PatternKind::Wild | ast::PatternKind::Variable, t) => {
-                out.push((pattern.span, (*t).clone()));
-                Ok(())
-            }
-            (ast::PatternKind::Tuple(patterns), TypeExpr::Product(elts))
-                if patterns.len() == elts.len() =>
-            {
-                for (p, t) in patterns.iter().zip(elts.iter()) {
-                    self.unify_let_bindings(p, t, out)?;
-                }
-                Ok(())
-            }
-            (ast::PatternKind::Tuple(patterns), t) => {
-                let fresh: Vec<TypeExpr> = patterns
-                    .iter()
-                    .map(|_| self.new_unification_variable(false))
-                    .collect();
-                self.unify(
-                    pattern.span,
-                    TypeExpr::Product(fresh.clone().into()),
-                    t.clone(),
-                )?;
-                for (p, v) in patterns.iter().zip(&fresh) {
-                    self.unify_let_bindings(p, v, out)?;
-                }
-                Ok(())
-            }
-        }
     }
 
     fn rule_let_rec(
@@ -478,12 +452,86 @@ impl TypeChecker {
         }
     }
 
-    fn rule_tuple(&mut self, elements: &Vec<ast::Expr>) -> Result<TypeExpr> {
+    fn rule_tuple(&mut self, elements: &[ast::Expr]) -> Result<TypeExpr> {
         let mut elts = Vec::new();
         for elt in elements {
             elts.push(self.algorithm_j(elt)?);
         }
         Ok(TypeExpr::Product(elts.into()))
+    }
+
+    fn rule_match(
+        &mut self,
+        scrutinee: &ast::Expr,
+        cases: &[(ast::Pattern, ast::Expr)],
+    ) -> Result<TypeExpr> {
+        let t = self.algorithm_j(scrutinee)?;
+        let result = self.new_unification_variable(false);
+        for (pattern, body) in cases {
+            let mut leaves = Vec::new();
+            self.unify_pattern(false, pattern, &t, &mut leaves)?;
+            let pop_count = leaves.len();
+            for (_, tp) in leaves {
+                self.context.push(Scheme::as_monotype(tp));
+            }
+            let t_arm = self.algorithm_j(body)?;
+            for _ in 0..pop_count {
+                self.context.pop();
+            }
+            self.unify(body.span, result.clone(), t_arm)
+                .map_err(|e| match e {
+                    TypeError::Unification { span, .. } => TypeError::MatchArms { span },
+                    e => e,
+                })?;
+        }
+        Ok(result)
+    }
+
+    fn unify_pattern(
+        &mut self,
+        is_let: bool,
+        pattern: &ast::Pattern,
+        tp: &TypeExpr,
+        out: &mut Vec<(ast::Span, TypeExpr)>,
+    ) -> Result<()> {
+        match (&pattern.kind, tp) {
+            (ast::PatternKind::Literal(lit), t) => {
+                if is_let {
+                    Err(TypeError::PatternContainsLiterals {
+                        span: pattern.span.into(),
+                    })
+                } else {
+                    self.unify(pattern.span, Self::rule_lit(lit), (*t).clone())
+                }
+            }
+            (ast::PatternKind::Wild | ast::PatternKind::Variable, t) => {
+                out.push((pattern.span, (*t).clone()));
+                Ok(())
+            }
+            (ast::PatternKind::Tuple(patterns), TypeExpr::Product(elts))
+                if patterns.len() == elts.len() =>
+            {
+                for (p, t) in patterns.iter().zip(elts.iter()) {
+                    self.unify_pattern(is_let, p, t, out)?;
+                }
+                Ok(())
+            }
+            (ast::PatternKind::Tuple(patterns), t) => {
+                let fresh: Vec<TypeExpr> = patterns
+                    .iter()
+                    .map(|_| self.new_unification_variable(false))
+                    .collect();
+                self.unify(
+                    pattern.span,
+                    TypeExpr::Product(fresh.clone().into()),
+                    t.clone(),
+                )?;
+                for (p, v) in patterns.iter().zip(&fresh) {
+                    self.unify_pattern(is_let, p, v, out)?;
+                }
+                Ok(())
+            }
+        }
     }
 
     fn new_unification_variable(&mut self, is_eq: bool) -> TypeExpr {
@@ -835,6 +883,31 @@ mod tests {
             check("let (f, n) = (fun x => x, 1); (f 1, f \"a\")").unwrap(),
             "(Int × String)"
         );
+        assert_eq!(check("match 1 { 1 => true, _ => false }").unwrap(), "Bool");
+        assert_eq!(
+            check(r#"match (1, "a") { (x, y) => y }"#).unwrap(),
+            "String"
+        );
+        assert_eq!(
+            check("match (1, 2) { (0, y) => y, (x, _) => x }").unwrap(),
+            "Int"
+        );
+        assert_eq!(check("match { 0 => 1, n => n * 2 }").unwrap(), "Int -> Int");
+        assert_eq!(check("fun x => match x { y => y }").unwrap(), "(∀α.α -> α)");
+        assert_eq!(
+            check("match { (x, y) => (y, x) }").unwrap(),
+            "(∀α.∀β.(α × β) -> (β × α))"
+        );
+        // pattern variable shadows the outer x
+        assert_eq!(
+            check(r#"let x = 1; match "a" { x => x }"#).unwrap(),
+            "String"
+        );
+        // arm bindings are popped afterwards
+        assert_eq!(
+            check(r#"let x = 1; (match "a" { y => y }, x)"#).unwrap(),
+            "(String × Int)"
+        );
     }
 
     #[test]
@@ -883,6 +956,24 @@ mod tests {
         assert!(matches!(
             check("(1, fun x => x) == (1, fun y => y)"),
             Err(TypeError::Equality { .. })
+        ));
+        assert!(matches!(
+            check("match 1 { 1 => true, _ => 2 }"),
+            Err(TypeError::MatchArms { .. })
+        ));
+        // pattern doesn't fit the scrutinee
+        assert!(matches!(
+            check(r#"match 1 { "a" => 1 }"#),
+            Err(TypeError::Unification { .. })
+        ));
+        assert!(matches!(
+            check("match (1, 2) { (x, y, z) => x }"),
+            Err(TypeError::Unification { .. })
+        ));
+        // match-bound variables are monomorphic
+        assert!(matches!(
+            check("match (fun x => x) { f => (f 1, f true) }"),
+            Err(TypeError::Unification { .. })
         ));
     }
 
