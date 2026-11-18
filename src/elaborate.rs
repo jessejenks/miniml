@@ -21,6 +21,12 @@ pub enum ElaborationError {
         #[label("cannot destructure here")]
         span: SourceSpan,
     },
+    #[error("this pattern cannot contain literal values")]
+    #[diagnostic(code(elaborator::pattern_contains_literals))]
+    PatternContainsLiterals {
+        #[label("cannot include literals here")]
+        span: SourceSpan,
+    },
 }
 
 pub fn surface_to_core(program: surface::Expr) -> Result<ast::Expr, ElaborationError> {
@@ -67,7 +73,7 @@ fn surface_to_core_inner<'a>(
         }
         surface::ExprKind::LetIn(is_rec, x, expr, body) => {
             if is_rec {
-                let (_, pattern) = push_scope(true, 0, scope, &x)?;
+                let (_, pattern) = push_scope(true, true, 0, scope, &x)?;
                 let e = surface_to_core_inner(scope, *expr)?;
                 let b = surface_to_core_inner(scope, *body)?;
                 scope.pop();
@@ -75,7 +81,7 @@ fn surface_to_core_inner<'a>(
             } else {
                 let e = surface_to_core_inner(scope, *expr)?;
                 let start = scope.len();
-                let (pop_count, pattern) = push_scope(false, start, scope, &x)?;
+                let (pop_count, pattern) = push_scope(false, true, start, scope, &x)?;
                 let b = surface_to_core_inner(scope, *body)?;
                 for _ in 0..pop_count {
                     scope.pop();
@@ -139,7 +145,39 @@ fn surface_to_core_inner<'a>(
                 Box::new(left_elabed),
             )
         }
-        surface::ExprKind::Match(_, _) => todo!(),
+        surface::ExprKind::Match(scrutinee, cases) => {
+            if scrutinee.is_none() {
+                scope.push("");
+            }
+            let mut elaborated_cases = Vec::new();
+            for (p, e) in cases {
+                let (pop_count, pattern) = push_scope(false, false, scope.len(), scope, &p)?;
+                let expr = surface_to_core_inner(scope, e)?;
+                for _ in 0..pop_count {
+                    scope.pop();
+                }
+                elaborated_cases.push((pattern, expr));
+            }
+            if let Some(scrutinee) = scrutinee {
+                let expr = surface_to_core_inner(scope, *scrutinee)?;
+                ast::ExprKind::Match(Box::new(expr), elaborated_cases)
+            } else {
+                scope.pop();
+                ast::ExprKind::Abstraction(
+                    None,
+                    Box::new(ast::Expr {
+                        kind: ast::ExprKind::Match(
+                            Box::new(ast::Expr {
+                                kind: ast::ExprKind::BoundVariable(0),
+                                span: expr.span,
+                            }),
+                            elaborated_cases,
+                        ),
+                        span: expr.span,
+                    }),
+                )
+            }
+        }
     };
     Ok(ast::Expr {
         kind,
@@ -149,12 +187,18 @@ fn surface_to_core_inner<'a>(
 
 fn push_scope<'a>(
     is_recursive: bool,
+    is_let: bool,
     start: usize,
     scope: &mut Vec<&'a str>,
     pattern: &surface::Pattern<'a>,
 ) -> Result<(usize, ast::Pattern), ElaborationError> {
     let (count, kind) = match &pattern.kind {
         surface::PatternKind::Literal(lit) => {
+            if is_let {
+                return Err(ElaborationError::PatternContainsLiterals {
+                    span: pattern.span.into(),
+                });
+            }
             (0, ast::PatternKind::Literal(surface_to_core_literal(lit)))
         }
         surface::PatternKind::Wild => {
@@ -180,7 +224,7 @@ fn push_scope<'a>(
             let mut count = 0;
             let mut pats = Vec::new();
             for p in patterns {
-                let (c, pat) = push_scope(false, start, scope, p)?;
+                let (c, pat) = push_scope(false, is_let, start, scope, p)?;
                 count += c;
                 pats.push(pat);
             }
@@ -286,6 +330,10 @@ mod tests {
         assert!(matches!(
             surface_to_core(Parser::parse("let (x, y, x) = (1, 2, 3); x").unwrap()),
             Err(ElaborationError::MultipleBindings { .. })
+        ));
+        assert!(matches!(
+            surface_to_core(Parser::parse("let 1 = f x; ()").unwrap()),
+            Err(ElaborationError::PatternContainsLiterals { .. })
         ));
     }
 }

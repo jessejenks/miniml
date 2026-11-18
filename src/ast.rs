@@ -116,10 +116,36 @@ pub enum PatternKind {
     Tuple(Vec<Pattern>),
 }
 
+impl Display for PatternKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Literal(lit) => lit.fmt(f),
+            Self::Wild => write!(f, "_"),
+            Self::Variable => write!(f, "v"),
+            Self::Tuple(patterns) => {
+                write!(f, "(")?;
+                for (i, p) in patterns.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{p}")?;
+                }
+                write!(f, ")")
+            }
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Pattern {
     pub kind: PatternKind,
     pub span: Span,
+}
+
+impl Display for Pattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.kind.fmt(f)
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -134,6 +160,7 @@ pub enum ExprKind {
     Unary(UnaryOp, Box<Expr>),
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Tuple(Vec<Expr>),
+    Match(Box<Expr>, Vec<(Pattern, Expr)>),
 }
 
 impl Display for ExprKind {
@@ -163,6 +190,17 @@ impl Display for ExprKind {
                     write!(f, "{elt}")?;
                 }
                 write!(f, ")")
+            }
+            ExprKind::Match(expr, cases) => {
+                write!(f, "(match {expr}")?;
+                write!(f, " {{ ")?;
+                for (i, (pattern, expr)) in cases.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{pattern} => {expr}")?;
+                }
+                write!(f, " }})")
             }
         }
     }

@@ -82,6 +82,7 @@ fn to_spanless(expr: &ast::Expr) -> Expr {
             Box::new(to_spanless(right)),
         ),
         ast::ExprKind::Tuple(elements) => Expr::Tuple(elements.iter().map(to_spanless).collect()),
+        ast::ExprKind::Match(_, _) => todo!(),
     }
 }
 
