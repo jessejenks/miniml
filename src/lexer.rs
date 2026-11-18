@@ -91,6 +91,7 @@ pub enum Keyword {
     If,
     Then,
     Else,
+    Match,
     Type,
 }
 
@@ -103,6 +104,7 @@ impl Display for Keyword {
             Keyword::If => write!(f, "if"),
             Keyword::Then => write!(f, "then"),
             Keyword::Else => write!(f, "else"),
+            Keyword::Match => write!(f, "match"),
             Keyword::Type => write!(f, "type"),
         }
     }
@@ -117,6 +119,7 @@ impl Keyword {
             "if" => Some(Keyword::If),
             "then" => Some(Keyword::Then),
             "else" => Some(Keyword::Else),
+            "match" => Some(Keyword::Match),
             "type" => Some(Keyword::Type),
             _ => None,
         }

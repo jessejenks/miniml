@@ -175,14 +175,13 @@ impl<'a> Parser<'a> {
                 start,
             ));
         }
-        if (self.chomp_if_next_is(Token::Keyword(Keyword::Let)))? {
-            let (let_start, _, _) = self.prev_token.expect("just read `let`");
+        if let Some((let_start, Token::Keyword(Keyword::Let), _)) = self.peek()? {
+            self.next()?;
             let is_recursive = self.chomp_if_next_is(Token::Keyword(Keyword::Rec))?;
             let pattern = self.pattern()?;
             self.expect(Token::Equal)?;
             let expr = self.expression(0)?;
-            let body_start = if self.just_closed_block() {
-                let (_, _, brace_end) = self.prev_token.expect("just closed a block");
+            let body_start = if let Some((_, Token::RBrace, brace_end)) = self.prev_token {
                 self.chomp_if_next_is(Token::Semi)?;
                 brace_end
             } else {
@@ -314,7 +313,6 @@ impl<'a> Parser<'a> {
                 | Token::Bang
                 | Token::Tilde
                 | Token::LParen
-                | Token::LBrace
         )
     }
 
@@ -358,6 +356,7 @@ impl<'a> Parser<'a> {
             Token::Keyword(Keyword::Fun) => self.abstraction(start),
             Token::Keyword(Keyword::Let) => self.let_in(start),
             Token::Keyword(Keyword::If) => self.if_else(start),
+            Token::Keyword(Keyword::Match) => self.match_expression(start),
             Token::LParen => {
                 let e = self.expression(0)?;
                 if self.chomp_if_next_is(Token::Comma)? {
@@ -509,6 +508,55 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    fn match_expression(&mut self, start: usize) -> Result<surface::Expr<'a>, ParseError> {
+        let scrutinee = if let Some((_, Token::LBrace, _)) = self.peek()? {
+            None
+        } else {
+            Some(Box::new(self.expression(0)?))
+        };
+        let (cases, end) = self.match_body()?;
+        Ok(surface::Expr::new(
+            surface::ExprKind::Match(scrutinee, cases),
+            start,
+            end,
+        ))
+    }
+
+    fn match_body(
+        &mut self,
+    ) -> Result<(Vec<(surface::Pattern<'a>, surface::Expr<'a>)>, usize), ParseError> {
+        self.expect(Token::LBrace)?;
+        let mut cases = Vec::new();
+        loop {
+            let pat = self.pattern()?;
+            self.expect(Token::WideArrow)?;
+            let expr = self.expression(0)?;
+            cases.push((pat, expr));
+            match self.peek()? {
+                Some((_, Token::Comma, _)) => {
+                    self.next()?;
+                    if let Some((_, Token::RBrace, end)) = self.peek()? {
+                        self.next()?;
+                        return Ok((cases, end));
+                    }
+                    // continue
+                }
+                Some((_, Token::RBrace, end)) => {
+                    self.next()?;
+                    return Ok((cases, end));
+                }
+                Some((start, tok, end)) => {
+                    return Err(ParseError::UnexpectedTokenExpecting {
+                        actual: format!("{tok:?}"),
+                        expected: "Comma or RBrace".to_string(),
+                        span: (start..end).into(),
+                    });
+                }
+                None => return Err(self.eof_error()),
+            }
+        }
+    }
+
     fn prefix_binding_power(tok: &Token) -> Option<(UnaryOp, u8)> {
         match tok {
             Token::Dash => Some((UnaryOp::Negate, PREFIX_RBP)),
@@ -623,7 +671,6 @@ mod tests {
         assert_eq!(parse("x'y").to_string(), "(x' y)");
         assert_eq!(parse("f 1").to_string(), "(f 1)");
         assert_eq!(parse("f (1)").to_string(), "(f 1)");
-        assert_eq!(parse("f { 1 }").to_string(), "(f 1)");
         assert_eq!(parse("1 + 2").to_string(), "(1 + 2)");
         assert_eq!(parse("1 + { 2 }").to_string(), "(1 + 2)");
         assert_eq!(parse("{ 1 } + 2").to_string(), "(1 + 2)");
@@ -738,6 +785,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pattern_matching() {
+        assert_eq!(
+            parse("match (1, 2) { (1, 2) => 1 }").to_string(),
+            "(match (1, 2) { (1, 2) => 1 })"
+        );
+        assert_eq!(
+            parse("match x { y => 1 }").to_string(),
+            "(match x { y => 1 })"
+        );
+        assert_eq!(
+            parse("match x { y => 1, _ => 2 }").to_string(),
+            "(match x { y => 1, _ => 2 })"
+        );
+        assert_eq!(
+            parse("match x { (y, z, 3) => 1, (_, 1, 2) => 2, _ => 3, }").to_string(),
+            "(match x { (y, z, 3) => 1, (_, 1, 2) => 2, _ => 3 })"
+        );
+        assert_eq!(
+            parse("match { (y, z, 3) => 1, (_, 1, 2) => 2, _ => 3, }").to_string(),
+            "(match { (y, z, 3) => 1, (_, 1, 2) => 2, _ => 3 })"
+        );
+        assert_eq!(
+            parse("f x |> match { (y, z, 3) => 1, (_, 1, 2) => 2, _ => 3, }").to_string(),
+            "((f x) |> (match { (y, z, 3) => 1, (_, 1, 2) => 2, _ => 3 }))"
+        );
+        assert_eq!(
+            parse("f (match { (y, z, 3) => 1, (_, 1, 2) => 2, _ => 3, })").to_string(),
+            "(f (match { (y, z, 3) => 1, (_, 1, 2) => 2, _ => 3 }))"
+        );
+        assert_eq!(
+            parse("match x { () => 1 }").to_string(),
+            "(match x { () => 1 })"
+        );
+        assert_eq!(
+            parse("match x { ((), (1, ()), ()) => 2 }").to_string(),
+            "(match x { ((), (1, ()), ()) => 2 })"
+        );
+    }
+
     #[track_caller]
     fn assert_expecting(source: &str, actual: &str, expected: &str, span: std::ops::Range<usize>) {
         let err = parse_err(source);
@@ -777,6 +864,14 @@ mod tests {
             (tok, SourceSpan::from(span)),
             "for {source:?}"
         );
+    }
+
+    #[test]
+    fn bad_block() {
+        assert!(matches!(
+            parse_err("f { 1 }"),
+            ParseError::ExpectedEOF { .. }
+        ));
     }
 
     #[test]

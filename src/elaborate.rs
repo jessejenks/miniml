@@ -139,6 +139,7 @@ fn surface_to_core_inner<'a>(
                 Box::new(left_elabed),
             )
         }
+        surface::ExprKind::Match(_, _) => todo!(),
     };
     Ok(ast::Expr {
         kind,

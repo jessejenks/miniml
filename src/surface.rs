@@ -121,6 +121,7 @@ pub enum ExprKind<'a> {
     Binary(BinaryOp, Box<Expr<'a>>, Box<Expr<'a>>),
     Sequence(Box<Expr<'a>>, Box<Expr<'a>>),
     Tuple(Vec<Expr<'a>>),
+    Match(Option<Box<Expr<'a>>>, Vec<(Pattern<'a>, Expr<'a>)>),
 }
 
 impl Display for ExprKind<'_> {
@@ -164,6 +165,20 @@ impl Display for ExprKind<'_> {
                     write!(f, "{elt}")?;
                 }
                 write!(f, ")")
+            }
+            ExprKind::Match(scrutinee, cases) => {
+                write!(f, "(match")?;
+                if let Some(expr) = scrutinee {
+                    write!(f, " {expr}")?;
+                }
+                write!(f, " {{ ")?;
+                for (i, (pattern, expr)) in cases.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{pattern} => {expr}")?;
+                }
+                write!(f, " }})")
             }
         }
     }
