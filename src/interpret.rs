@@ -1,7 +1,7 @@
 use crate::ast;
 use std::fmt::Display;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(PartialEq, Clone)]
 pub enum Pattern {
     Literal(ast::Literal),
     Wild,
@@ -9,7 +9,27 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
 }
 
-#[derive(Debug, PartialEq, Clone)]
+impl Display for Pattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Pattern::Literal(lit) => lit.fmt(f),
+            Pattern::Wild => write!(f, "_"),
+            Pattern::Variable => write!(f, "v"),
+            Pattern::Tuple(patterns) => {
+                write!(f, "(")?;
+                for (i, p) in patterns.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{p}")?;
+                }
+                write!(f, ")")
+            }
+        }
+    }
+}
+
+#[derive(PartialEq, Clone)]
 pub enum Expr {
     Literal(ast::Literal),
     BoundVariable(i64),
@@ -21,6 +41,7 @@ pub enum Expr {
     Unary(ast::UnaryOp, Box<Expr>),
     Binary(ast::BinaryOp, Box<Expr>, Box<Expr>),
     Tuple(Vec<Expr>),
+    Match(Box<Expr>, Vec<(Pattern, Expr)>),
 }
 
 impl Display for Expr {
@@ -50,6 +71,17 @@ impl Display for Expr {
                     write!(f, "{elt}")?;
                 }
                 write!(f, ")")
+            }
+            Expr::Match(scrutinee, cases) => {
+                write!(f, "(match {scrutinee}")?;
+                write!(f, " {{ ")?;
+                for (i, (pattern, expr)) in cases.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{pattern} => {expr}")?;
+                }
+                write!(f, " }})")
             }
         }
     }
@@ -82,7 +114,13 @@ fn to_spanless(expr: &ast::Expr) -> Expr {
             Box::new(to_spanless(right)),
         ),
         ast::ExprKind::Tuple(elements) => Expr::Tuple(elements.iter().map(to_spanless).collect()),
-        ast::ExprKind::Match(_, _) => todo!(),
+        ast::ExprKind::Match(scrutinee, cases) => Expr::Match(
+            Box::new(to_spanless(scrutinee)),
+            cases
+                .iter()
+                .map(|(p, e)| (to_spanless_pattern(p), to_spanless(e)))
+                .collect(),
+        ),
     }
 }
 
@@ -111,6 +149,7 @@ fn get_leaves(pattern: &Pattern, value: &Expr, out: &mut Vec<Expr>) -> bool {
             out.push(v.clone());
             true
         }
+        (Pattern::Literal(lit), Expr::Literal(v)) => lit == v,
         (Pattern::Tuple(patterns), Expr::Tuple(elements)) if patterns.len() == elements.len() => {
             patterns
                 .iter()
@@ -158,6 +197,16 @@ fn shift(i: i64, c: i64, expr: Expr) -> Expr {
         Expr::Tuple(elements) => {
             Expr::Tuple(elements.into_iter().map(|e| shift(i, c, e)).collect())
         }
+        Expr::Match(scrutinee, cases) => Expr::Match(
+            Box::new(shift(i, c, *scrutinee)),
+            cases
+                .into_iter()
+                .map(|(p, e)| {
+                    let count = leaf_count(&p);
+                    (p, shift(i, c + count, e))
+                })
+                .collect(),
+        ),
     }
 }
 
@@ -209,6 +258,16 @@ fn substitute(t: Expr, n: i64, expr: Expr) -> Expr {
                 .map(|e| substitute(e, n, expr.clone()))
                 .collect(),
         ),
+        Expr::Match(scrutinee, cases) => {
+            let new_cases = cases
+                .into_iter()
+                .map(|(p, e)| {
+                    let count = leaf_count(&p);
+                    (p, substitute(e, n + count, shift(count, 0, expr.clone())))
+                })
+                .collect();
+            Expr::Match(Box::new(substitute(*scrutinee, n, expr)), new_cases)
+        }
     }
 }
 
@@ -423,6 +482,16 @@ fn cbv(expr: Expr) -> Expr {
             }
         }
         Expr::Tuple(elements) => Expr::Tuple(elements.into_iter().map(cbv).collect()),
+        Expr::Match(scrutinee, cases) => {
+            let v = cbv(*scrutinee);
+            for (p, e) in &cases {
+                let mut leaves = Vec::new();
+                if get_leaves(p, &v, &mut leaves) {
+                    return cbv(leaves.into_iter().rev().fold(e.clone(), beta));
+                }
+            }
+            Expr::Match(Box::new(v), cases)
+        }
         x => x,
     }
 }
@@ -491,7 +560,7 @@ mod tests {
             "(λ.(if (< #0 2) then 1 else (* #0 ((let rec (λ.(if (< #0 2) then 1 else (* #0 (#1 (- #0 1))))) in #0) (- #0 1)))))"
         );
         assert_eq!(interp("(1 + 2, 3)").to_string(), "(3, 3)");
-        // tuples and patterns
+        // tuples and destructuring
         assert_eq!(interp("let _ = 1; 2").to_string(), "2");
         assert_eq!(interp("let x = 1; (x, x)").to_string(), "(1, 1)");
         assert_eq!(interp("let (x, y) = (1, 2); 1 + 2").to_string(), "3");
@@ -503,6 +572,21 @@ mod tests {
             // pattern doesn't match, so stuck
             interp("let (x, (y, z)) = (1, ()); x + y + z").to_string(),
             "(let (1, ()) in (+ (+ #2 #1) #0))"
+        );
+        // pattern matching
+        assert_eq!(interp("match (1, 2) { (x, y) => x + y }").to_string(), "3");
+        assert_eq!(
+            interp("match (\"a\", 3) { (\"b\", _) => 0, (\"a\", n) => n * 2 }").to_string(),
+            "6"
+        );
+        assert_eq!(
+            interp("let y = 10; match (1, (2, true)) { (1, (_, false)) => 0, (x, (2, true)) => x + y, _ => 99 }").to_string(),
+            "11",
+        );
+        assert_eq!(
+            // stuck, non-exhaustive match
+            interp("match 1 { 2 => 3 }").to_string(),
+            "(match 1 { 2 => 3 })"
         );
         // builtins
         assert_eq!(interp("print ()").to_string(), "(print ())");
