@@ -2,35 +2,42 @@
 
 ![Tests](https://github.com/jessejenks/miniml/actions/workflows/test.yml/badge.svg)
 
-A small ML-style language compiled with the ZINC abstract machine's scheme and LLVM.
+A small ML-style language compiled to LLVM using the ZINC abstract machine's scheme.
 
 ```sml
-# factorial function
-let rec fact = fun n => {
-    if n < 2
-        then 1
-        else n * fact (n - 1)
+# fibonacci with accumulator
+let rec fib = fun n, acc => {
+    let (a, b) = acc;
+    match n {
+        0 => a,
+        _ => fib (n - 1) (b, a + b)
+    }
 }
 
-let result = fact 5;
+let result = fib 10 (0, 1);
 
-print result;
+print ("fib 10 = " ++ intToStr result);
 
 result
 ```
 
 ## Highlights
 
-This is a simple functional language inspired by CAML that compiles to native executables through LLVM using
-`inkwell`[^1].
+This is a simple functional language inspired by CAML that compiles to native executables through LLVM using the
+`inkwell`[^1] crate.
 
-The compiler uses the ZINC[^2] abstract machine's compilation scheme, and is based on my previous ZINC project[^3].
+The compiler uses the ZINC[^2] abstract machine's compilation scheme, and is based on my previous ZINC project[^3] and
+[blog series](https://jessejenks.github.io/blog/).
 
 It features:
 
 - A Hindley-Milner type checker with SML style equality types[^4] for `==` comparison
-- Proper tails calls with `tailcc` and `musttail`
-- A [small C runtime](runtime/runtime.c) with a non-moving mark-sweep garbage collector
+- Proper tail calls with `tailcc` and `musttail`
+- A [small C runtime](runtime/runtime.c) with a non-moving mark-sweep garbage collector that scans the native stack
+  conservatively and the argument stack precisely
+- A reference call-by-value interpreter that the compiled code is tested against
+- Pattern matching on literals and tuples, compiled to decision trees using Jules Jacobs' algorithm[^5], with
+  non-exhaustive matches reported as compile errors
 
 Compared to the initial runtime (`5707e42`), I've already improved performance of benchmark programs at `-O0` to
 
@@ -45,15 +52,15 @@ See [the benchmarks section](#benchmarks) below for more details.
 ### Creating an Executable
 
 ```sh
-miniml fact.mml
-./fact
+miniml fib.mml
+./fib
 ```
 
-prints `120` to stdout and then displays the final computed value.
+prints `fib 10 = 55` to stdout and then displays the final computed value.
 
 ```
-120
-- : Int = 120
+fib 10 = 55
+- : Int = 55
 ```
 
 ### Options
@@ -61,16 +68,16 @@ prints `120` to stdout and then displays the final computed value.
 All options can be seen with `--help`, but they mostly match `clang` and `gcc`.
 
 ```sh
-miniml fact.mml --target x86_64-pc-windows-msvc -c -O2
+miniml fib.mml --target x86_64-pc-windows-msvc -c -O2
 ```
 
-will write a COFF object file at `fact.o`.
+will write a COFF object file at `fib.o`.
 
 Object files (`-c`) and assembly (`-S`) don't include the runtime, so link it yourself.
 
 ```sh
-miniml fact.mml -c
-$CC fact.o runtime/runtime.c -o fact
+miniml fib.mml -c
+$CC fib.o runtime/runtime.c -o fib
 ```
 
 ### Allocation Stats
@@ -78,15 +85,15 @@ $CC fact.o runtime/runtime.c -o fact
 Set `MINIML_STATS` to print allocation counts to stderr when the program exits.
 
 ```sh
-MINIML_STATS=1 ./fact
+MINIML_STATS=1 ./fib
 ```
 
 ```
-120
-- : Int = 120
-allocations: 12
-allocated bytes: 192
-peak heap: 192
+fib 10 = 55
+- : Int = 55
+allocations: 76
+allocated bytes: 1816
+peak heap: 1816
 collections: 0
 max live bytes: 0
 final live bytes: 0
@@ -118,41 +125,47 @@ LLVM_SYS_211_PREFIX=/path/to/llvm cargo build
 Debugging the lexer.
 
 ```sh
-miniml fact.mml --lex
+miniml fib.mml --lex
 ```
 
 Just prints each token and its location in the file
 
 ```
-Keyword(Let) (21, 24)  # `let` keyword at input indices 21 through 24, non-inclusive
-Keyword(Rec) (25, 28)
-Identifier("fact") (29, 33)
-Equal (34, 35)
+Keyword(Let) (29, 32) # span of token
+Keyword(Rec) (33, 36)
+Identifier("fib") (37, 40)
+Equal (41, 42)
+Keyword(Fun) (43, 46)
+Identifier("n") (47, 48)
+Comma (48, 49)
+Identifier("acc") (50, 53)
+WideArrow (54, 56)
+LBrace (57, 58)
 ... etc
 ```
 
 ### Parser
 
 ```sh
-miniml fact.mml --parse
+miniml fib.mml --parse
 ```
 
 outputs fully parenthesized expression.
 
 ```
-(let rec fact = (fun n => (if (n < 2) then 1 else (n * (fact (n - 1))))); (let result = (fact 5); ((print result); result)))
+(let rec fib = (fun n, acc => (let (a, b) = acc; (match n { 0 => a, _ => ((fib (n - 1)) (b, (a + b))) }))); (let result = ((fib 10) (0, 1)); ((print ("fib 10 = " ++ (intToStr result))); result)))
 ```
 
 ### Elaborator
 
 ```sh
-miniml fact.mml --elab
+miniml fib.mml --elab
 ```
 
 Elaborates to a core syntax with de Bruijn indices, and printed in s-expression like format.
 
 ```
-(let rec (λ.(if (< #0 2) then 1 else (* #0 (#1 (- #0 1))))) in (let (#0 5) in ((λ.#1) (print #0))))
+(let rec (λ.(λ.(let #0 in (match #3 { 0 => #1, _ => ((#5 (- #4 1)) (#1, (+ #2 #1))) })))) in (let ((#0 10) (0, 1)) in ((λ.#1) (print (++ "fib 10 = " (intToStr #0))))))
 ```
 
 Multi-parameter functions are also elaborated to curried functions, so `fun x, y, z => z` is equivalent to
@@ -167,20 +180,20 @@ Sequences are derived forms, and are elaborated to lambdas.
 ### Type Checker
 
 ```sh
-miniml fact.mml --types
-miniml fact.mml --interface
-miniml fact.mml -i
+miniml fib.mml --types
+miniml fib.mml --interface
+miniml fib.mml -i
 ```
 
 Prints inferred top-level declarations and type of entire program.
 
 ```
-fact : Int -> Int
+fib : Int -> (Int × Int) -> Int
 result : Int
 - : Int
 ```
 
-Uses Hindley-Milner type checking. So
+Uses Hindley-Milner type checking.
 
 ```
 let id = fun x => x;
@@ -201,42 +214,75 @@ func : (∀α.∀β.α -> β -> β)
 - : Unit
 ```
 
+### Pattern Matching
+
+```sh
+miniml fib.mml --patterns
+```
+
+Prints the decision tree compiled from each `match` expression.
+
+```
+source:
+match n {
+        0 => a,
+        _ => fib (n - 1) (b, a + b)
+    }
+
+tree:
+match# a_0
+| 0 =>
+  arm 0: 0 => a
+| _ =>
+  arm 1: _ => fib (n - 1) (b, a + b)
+    with _ = a_0
+```
+
+This output will always show a tree, but when compiling, a `match` that doesn't cover every case is a compile error.
+
+For example the following program will type check, but the match is not exhaustive.
+
+```
+source:
+match {
+    (x, y, 1) => x + y,
+    (x, y, 2) => x - y,
+}
+
+tree:
+match# a_0
+| (a_1, a_2, a_3) =>
+  match# a_3
+  | 1 =>
+    arm 0: (x, y, 1) => x + y
+      with x = a_1, y = a_2
+  | _ =>
+    match# a_3
+    | 2 =>
+      arm 1: (x, y, 2) => x - y
+        with x = a_1, y = a_2
+    | _ =>
+      ERR
+```
+
 ### Interpreter
 
 This project includes a reference call-by-value interpreter.
 
 ```sh
-miniml fact.mml --interpret
+miniml fib.mml --interpret
 ```
 
 ```
-120
-- : Int = 120
-```
-
-Note that one difference between the interpreter and the compiled version is that
-
-```
-fun => 1
-```
-
-will print the actual term
-
-```
-- : (∀α.α -> Int) = (λ.1)
-```
-
-instead of
-
-```
-- : (∀α.α -> Int) = <fun>
+fib 10 = 55
+- : Int = 55
 ```
 
 ### Code Generation
 
 ```sh
-miniml fact.mml --codegen
-miniml fact.mml --codegen -O2 # to run LLVM -O2
+miniml fib.mml --codegen
+miniml fib.mml --codegen -O2 # to run LLVM -O2
 ```
 
 Prints LLVM IR to stdout.
@@ -244,8 +290,8 @@ Prints LLVM IR to stdout.
 It should look something like this
 
 ```llvm
-; ModuleID = 'fact.mml'
-source_filename = "fact.mml"
+; ModuleID = 'fib.mml'
+source_filename = "fib.mml"
 
 %list = type { i64, ptr }
 %closure = type { ptr, ptr }
@@ -253,7 +299,7 @@ source_filename = "fact.mml"
 @miniml_args = external global ptr
 ; ...
 
-declare ptr @miniml_alloc(i64)
+declare ptr @miniml_alloc(i64, i64)
 
 declare i32 @printf(ptr, ...)
 ; ...
@@ -272,47 +318,76 @@ entry:
 ; ...
 ```
 
+## Differences Between Interpreted and Compiled Programs
+
+### Stuck Terms
+
+The interpreter tries to be a true call-by-value interpreter, so there are no runtime errors. Stuck terms simply stop
+being evaluated.
+
+This is also true of exhaustiveness checking in pattern matching. If a pattern doesn't match, the match expression never
+reduces.
+
+Neither of these behaviors is visible with the basic pipeline since the the type and pattern checks are run first. But
+you can see this in the tests.
+
+### Printing terms
+
+```
+fun => 1
+```
+
+The interpreter will print the actual term
+
+```
+- : (∀α.α -> Int) = (λ.1)
+```
+
+while the compiled output just shows
+
+```
+- : (∀α.α -> Int) = <fun>
+```
+
 ## Running the LLVM IR
 
 If you want to compile from the generated LLVM directly, you'll need to include the runtime as well.
 
 ```sh
-miniml fact.mml --codegen > fact.ll
+miniml fib.mml --codegen > fib.ll
 ```
 
 You can compile the runtime to LLVM and use `lli`
 
 ```sh
 $CC -S -emit-llvm runtime/runtime.c -o runtime.ll
-lli --extra-module=runtime.ll fact.ll
+lli --extra-module=runtime.ll fib.ll
 ```
 
 Or directly compile them together
 
 ```sh
-$CC fact.ll runtime/runtime.c -o fact
-./fact
+$CC fib.ll runtime/runtime.c -o fib
+./fib
 ```
 
 ## Internals
 
-Values are 64-bit words with 63-bit tagged integers or pointers to closures.
+Values are 64-bit words with 63-bit tagged integers or pointers to heap-allocated objects. Following the ZINC paper and OCaml, each object has a header word.
 
 Like my existing WebAssembly version[^3], the environment is a heap-allocated list, and closures are pairs of code
-pointers and environments. But this project includes several optimizations, and manages its own garbage collection. The
-WASM version relies on the GC extension.
-
-In section 3.3.2 of The ZINC Experiment[^2], Leroy discusses how using multiple application instead of binary
-application to collect arguments will prevent unnecessary closures from being created.
+pointers and environments. But this project includes several optimizations, and manages its own garbage collection.
 
 ### Benchmarks
 
-The linked-list argument stack with a bump-pointer array dropped the number of allocations significantly. This reduces
-the number of allocations required at all, but to make more efficient use of memory requires memory management.
+In section 3.3.2 of The ZINC Experiment[^2], Leroy discusses how using multiple application instead of binary
+application to collect arguments will prevent unnecessary closures from being created. The linked-list argument stack
+with a bump-pointer array dropped the number of allocations significantly. This reduces the number of allocations
+required at all, but to make more efficient use of memory requires memory management.
 
 All values are percent reduction relative to `5707e42`. A `-` indicates no change in allocations.
 
-Benchmark numbers come from statistics captured in the runtime and from hyperfine[^5] version 2.0.0. This table only
+Benchmark numbers come from statistics captured in the runtime and from hyperfine[^6] version 2.0.0. This table only
 compares programs compiled with `-O0`.
 
 | file            | commit    | allocations | peak memory | wall time |
@@ -377,4 +452,7 @@ Notes:
 [^4]: _The Definition of Standard ML Revised_ "Types and Type Functions"
     ([source](https://github.com/SMLFamily/The-Definition-of-Standard-ML-Revised/blob/c4212f434cafd06669171619f7d332341a5b31f3/statcor.tex#L241))
 
-[^5]: Hyperfine benchmarking tool: https://github.com/sharkdp/hyperfine
+[^5]: _How to compile pattern matching_, Jules Jacobs (2021)
+    ([source](https://julesjacobs.com/notes/patternmatching/patternmatching.pdf))
+
+[^6]: Hyperfine benchmarking tool: https://github.com/sharkdp/hyperfine
