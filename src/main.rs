@@ -106,7 +106,7 @@ fn main() -> miette::Result<()> {
         .infer(&elaborated_program)
         .map_err(|e| report(e, &args.path, &source))?;
 
-    patternmatch::check_patterns(&elaborated_program, &source, args.patterns)
+    let compiled_trees = patternmatch::check_patterns(&elaborated_program, &source, args.patterns)
         .map_err(|e| report(e, &args.path, &source))?;
 
     if args.types {
@@ -150,8 +150,8 @@ fn main() -> miette::Result<()> {
     }
 
     let context = Context::create();
-    let mut compiler =
-        Compiler::new(&context, &args.path).map_err(|e| report(e, &args.path, &source))?;
+    let mut compiler = Compiler::new(&context, &args.path, compiled_trees)
+        .map_err(|e| report(e, &args.path, &source))?;
     if let Some(triple) = &args.target {
         compiler.set_target(triple.clone());
     }

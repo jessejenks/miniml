@@ -26,8 +26,9 @@ static RUNTIME_LOCK: Mutex<()> = Mutex::new(());
 fn run(source: &str) -> i64 {
     // validate and run inkwell JIT
     let program = surface_to_core(Parser::parse(source).unwrap()).unwrap();
+    let trees = patternmatch::check_patterns(&program, source, false).unwrap();
     let context = Context::create();
-    let mut compiler = Compiler::new(&context, "test").unwrap();
+    let mut compiler = Compiler::new(&context, "test", trees).unwrap();
     compiler
         .compile(&program, &ResultKind::ExitCode, "")
         .unwrap();
@@ -208,23 +209,10 @@ fn compiles_expressions() {
 fn unknown_variable() {
     let program = surface_to_core(Parser::parse("1 + foo").unwrap()).unwrap();
     let context = Context::create();
-    let mut compiler = Compiler::new(&context, "test").unwrap();
+    let mut compiler = Compiler::new(&context, "test", HashMap::new()).unwrap();
     assert!(matches!(
         compiler.compile(&program, &ResultKind::ExitCode, ""),
         Err(CodegenError::UnknownVariable { name, .. }) if name == "foo"
-    ));
-}
-
-#[test]
-fn non_exhaustive_match() {
-    let program = surface_to_core(Parser::parse("match 1 { 2 => 3 }").unwrap()).unwrap();
-    let context = Context::create();
-    let mut compiler = Compiler::new(&context, "test").unwrap();
-    assert!(matches!(
-        compiler.compile(&program, &ResultKind::ExitCode, ""),
-        Err(CodegenError::PatternMatch(
-            PatternMatchError::NonExhaustive { .. }
-        ))
     ));
 }
 

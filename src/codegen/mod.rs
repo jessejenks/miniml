@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use inkwell::{
     AddressSpace, IntPredicate, OptimizationLevel,
     builder::{Builder, BuilderError},
@@ -10,8 +12,7 @@ use inkwell::{
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
 
-use crate::ast;
-use crate::patternmatch::PatternMatchError;
+use crate::{ast, patternmatch};
 
 mod expr;
 mod machine;
@@ -22,10 +23,6 @@ mod tests;
 
 #[derive(Debug, Error, Diagnostic)]
 pub enum CodegenError {
-    #[error(transparent)]
-    #[diagnostic(transparent)]
-    PatternMatch(#[from] PatternMatchError),
-
     #[error("LLVM builder error: {0}")]
     #[diagnostic(code(codegen::llvm))]
     Builder(#[from] BuilderError),
@@ -80,6 +77,7 @@ enum Tag {
 }
 
 pub struct Compiler<'ctx> {
+    trees: HashMap<ast::Span, patternmatch::Tree>,
     context: &'ctx Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
@@ -116,7 +114,11 @@ pub struct Compiler<'ctx> {
 }
 
 impl<'ctx> Compiler<'ctx> {
-    pub fn new(context: &'ctx Context, name: &str) -> Result<Self> {
+    pub fn new(
+        context: &'ctx Context,
+        name: &str,
+        trees: HashMap<ast::Span, patternmatch::Tree>,
+    ) -> Result<Self> {
         let module = context.create_module(name);
 
         let word = context.i64_type();
@@ -238,6 +240,7 @@ impl<'ctx> Compiler<'ctx> {
         let builder = context.create_builder();
 
         let mut c = Self {
+            trees,
             context,
             module,
             builder,

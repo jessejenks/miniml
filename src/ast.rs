@@ -1,7 +1,7 @@
 use crate::lexer::escape_str;
 use std::{fmt::Display, ops::Range};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
     pub start: usize,
     pub end: usize,

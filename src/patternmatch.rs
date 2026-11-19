@@ -448,37 +448,48 @@ pub fn check_patterns(
     expr: &ast::Expr,
     source: &str,
     debug: bool,
+) -> Result<HashMap<ast::Span, Tree>, PatternMatchError> {
+    let mut map = HashMap::new();
+    capture_trees(expr, source, debug, &mut map)?;
+    Ok(map)
+}
+
+fn capture_trees(
+    expr: &ast::Expr,
+    source: &str,
+    debug: bool,
+    map: &mut HashMap<ast::Span, Tree>,
 ) -> Result<(), PatternMatchError> {
     match &expr.kind {
         ast::ExprKind::Literal(_)
         | ast::ExprKind::BoundVariable(_)
         | ast::ExprKind::FreeVariable(_) => Ok(()),
         ast::ExprKind::Application(left, right) | ast::ExprKind::Binary(_, left, right) => {
-            check_patterns(left, source, debug)?;
-            check_patterns(right, source, debug)
+            capture_trees(left, source, debug, map)?;
+            capture_trees(right, source, debug, map)
         }
         ast::ExprKind::Abstraction(_, expr) | ast::ExprKind::Unary(_, expr) => {
-            check_patterns(expr, source, debug)
+            capture_trees(expr, source, debug, map)
         }
         ast::ExprKind::LetIn(_, _, expr, body) => {
-            check_patterns(expr, source, debug)?;
-            check_patterns(body, source, debug)
+            capture_trees(expr, source, debug, map)?;
+            capture_trees(body, source, debug, map)
         }
         ast::ExprKind::IfElse(condition, consequence, alternative) => {
-            check_patterns(condition, source, debug)?;
-            check_patterns(consequence, source, debug)?;
-            check_patterns(alternative, source, debug)
+            capture_trees(condition, source, debug, map)?;
+            capture_trees(consequence, source, debug, map)?;
+            capture_trees(alternative, source, debug, map)
         }
         ast::ExprKind::Tuple(elements) => {
             for element in elements {
-                check_patterns(element, source, debug)?;
+                capture_trees(element, source, debug, map)?;
             }
             Ok(())
         }
         ast::ExprKind::Match(scrutinee, arms) => {
-            check_patterns(scrutinee, source, debug)?;
+            capture_trees(scrutinee, source, debug, map)?;
             for (_, body) in arms {
-                check_patterns(body, source, debug)?;
+                capture_trees(body, source, debug, map)?;
             }
             let tree = MatchCompiler::compile(expr.span, arms, !debug)?;
             if debug {
@@ -487,6 +498,10 @@ pub fn check_patterns(
                 debug_tree(&tree, arms, source, 0)?;
                 println!();
             }
+            if map.insert(expr.span, tree).is_some() {
+                unreachable!("two matches share span {:?}", expr.span);
+            }
+
             Ok(())
         }
     }

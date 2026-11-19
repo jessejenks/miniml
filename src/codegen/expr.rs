@@ -6,7 +6,7 @@ use super::{Compiler, Result};
 use crate::{
     ast,
     codegen::Tag,
-    patternmatch::{Arm, Branch, MatchCompiler, MatchVar, Tree},
+    patternmatch::{Arm, Branch, MatchVar, Tree},
 };
 
 impl<'ctx> Compiler<'ctx> {
@@ -155,7 +155,7 @@ impl<'ctx> Compiler<'ctx> {
         scrutinee: &ast::Expr,
         arms: &[(ast::Pattern, ast::Expr)],
     ) -> Result<Vec<Option<(BasicBlock<'ctx>, usize)>>> {
-        let tree = MatchCompiler::compile(span, arms, true)?;
+        let tree = self.trees.remove(&span).unwrap();
         let value = self.compile_expression(scrutinee)?;
         let mut vars = HashMap::from([(MatchVar(0), value)]);
         let mut arm_blocks = vec![None; arms.len()];
