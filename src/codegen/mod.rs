@@ -63,6 +63,7 @@ pub enum ResultKind {
     /// no return value expected
     Never,
     /// always return the unboxed result as the exit code
+    #[cfg(test)]
     ExitCode,
 }
 
@@ -297,6 +298,7 @@ impl<'ctx> Compiler<'ctx> {
 
         let result = self.compile_expression(program)?;
         match kind {
+            #[cfg(test)]
             ResultKind::ExitCode => {
                 let exit_code = self.unbox_int(result)?;
                 self.builder.build_return(Some(&exit_code))?;
@@ -381,7 +383,9 @@ impl<'ctx> Compiler<'ctx> {
                 self.call_printf(")", &[])?;
             }
             ResultKind::Function => self.call_printf("<fun>", &[])?,
-            ResultKind::ExitCode | ResultKind::Never => unreachable!("handled in compile"),
+            ResultKind::Never => unreachable!("handled in compile"),
+            #[cfg(test)]
+            ResultKind::ExitCode => unreachable!("handled in compile"),
         }
         Ok(())
     }

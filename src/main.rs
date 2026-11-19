@@ -25,28 +25,25 @@ struct Args {
     #[arg(required = true)]
     path: String,
     /// Run the lexer
-    #[arg(long)]
+    #[arg(long, group = "stage")]
     lex: bool,
     /// Run the parser
-    #[arg(long)]
+    #[arg(long, group = "stage")]
     parse: bool,
     /// Run the elaborator
-    #[arg(long)]
+    #[arg(long, group = "stage")]
     elab: bool,
     /// Print types for declarations
-    #[arg(long, visible_alias = "interface", short = 'i')]
+    #[arg(long, visible_alias = "interface", short = 'i', group = "stage")]
     types: bool,
     /// Compile pattern matches in code (debug)
-    #[arg(long)]
+    #[arg(long, group = "stage")]
     patterns: bool,
-    /// Run interpreter or codegen even if type check failed
-    #[arg(long)]
-    force: bool,
     /// Run the interpreter
-    #[arg(long)]
+    #[arg(long, group = "stage")]
     interpret: bool,
     /// Output to LLVM
-    #[arg(long, visible_alias = "emit-llvm")]
+    #[arg(long, visible_alias = "emit-llvm", group = "stage")]
     codegen: bool,
     /// Write assembly to `<output>.s`
     #[arg(short = 'S')]
@@ -105,49 +102,44 @@ fn main() -> miette::Result<()> {
 
     let mut type_checker = TypeChecker::new();
     add_builtins(&mut type_checker);
-    let type_check_result = type_checker.infer(&elaborated_program);
-    let (result_kind, result_label) = match type_check_result {
-        Err(e) => {
-            let rep = report(e, &args.path, &source);
-            if !args.force {
-                return Err(rep);
-            }
-            eprintln!("{rep:?}");
-            (ResultKind::ExitCode, String::new())
-        }
-        Ok(sch) if args.types => {
-            let mut spans = Vec::new();
-            let mut expr = &elaborated_program;
-            loop {
-                match &expr.kind {
-                    ast::ExprKind::LetIn(_, pattern, _, body) => {
-                        collect_spans(&mut spans, pattern);
-                        expr = body;
-                    }
-                    ast::ExprKind::Application(f, _) => match &f.kind {
-                        ast::ExprKind::Abstraction(None, rest) => expr = rest,
-                        _ => break,
-                    },
+    let sch = type_checker
+        .infer(&elaborated_program)
+        .map_err(|e| report(e, &args.path, &source))?;
+
+    patternmatch::check_patterns(&elaborated_program, &source, args.patterns)
+        .map_err(|e| report(e, &args.path, &source))?;
+
+    if args.types {
+        let mut spans = Vec::new();
+        let mut expr = &elaborated_program;
+        loop {
+            match &expr.kind {
+                ast::ExprKind::LetIn(_, pattern, _, body) => {
+                    collect_spans(&mut spans, pattern);
+                    expr = body;
+                }
+                ast::ExprKind::Application(f, _) => match &f.kind {
+                    ast::ExprKind::Abstraction(None, rest) => expr = rest,
                     _ => break,
-                }
+                },
+                _ => break,
             }
-            if !spans.is_empty() {
-                let bindings = type_checker.bindings();
-                for span in spans {
-                    if let Some((_, scheme)) = bindings.iter().find(|(sp, _)| *sp == span) {
-                        println!("{} : {scheme}", &source[span.start..span.end]);
-                    }
-                }
-            }
-            println!("- : {sch}");
-            return Ok(());
         }
-        Ok(sch) => (result_kind(sch.tp()), format!("- : {sch} = ")),
-    };
+        if !spans.is_empty() {
+            let bindings = type_checker.bindings();
+            for span in spans {
+                if let Some((_, scheme)) = bindings.iter().find(|(sp, _)| *sp == span) {
+                    println!("{} : {scheme}", &source[span.start..span.end]);
+                }
+            }
+        }
+        println!("- : {sch}");
+        return Ok(());
+    }
+
+    let (result_kind, result_label) = (result_kind(sch.tp()), format!("- : {sch} = "));
 
     if args.patterns {
-        patternmatch::debug_pattern_matching(&elaborated_program, &source)
-            .map_err(|e| report(e, &args.path, &source))?;
         return Ok(());
     }
 
