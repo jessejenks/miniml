@@ -145,12 +145,12 @@ fn surface_to_core_inner<'a>(
                 Box::new(left_elabed),
             )
         }
-        surface::ExprKind::Match(scrutinee, cases) => {
+        surface::ExprKind::Match(scrutinee, arms) => {
             if scrutinee.is_none() {
                 scope.push("");
             }
             let mut elaborated_cases = Vec::new();
-            for (p, e) in cases {
+            for (p, e) in arms {
                 let (pop_count, pattern) = push_scope(false, false, scope.len(), scope, &p)?;
                 let expr = surface_to_core_inner(scope, e)?;
                 for _ in 0..pop_count {

@@ -178,6 +178,21 @@ fn compiles_expressions() {
     );
     agrees("(fun a => let (x, y) = (1, 2); a + x * y) 10");
     agrees("let f = fun p => let (x, (y, z)) = p; x - y * z; f (10, (2, 3))");
+    // match
+    agrees("match (1, 2) { (x, y) => x + y }");
+    agrees(
+        "let y = 10; match (1, (2, true)) { (1, (_, false)) => 0, (x, (2, true)) => x + y, _ => 99 }",
+    );
+    agrees("match (\"a\", 3) { (\"b\", _) => 0, (\"a\", n) => n * 2, _ => 7 }");
+    agrees(
+        "let f = match { (true, x) => x, (false, _) => 'z' };
+        if (f (true, 'a'), f (false, 'b')) == ('a', 'z') then 1 else 2",
+    );
+    agrees("let rec fib = match { 0 => 0, 1 => 1, n => fib (n - 1) + fib (n - 2) }; fib 20");
+    agrees(
+        "let g = fun p => match p { (1, (_, b)) => b, (x, (2, _)) => x == 1, (x, (y, true)) => x == y, _ => false };
+        if (g (1, (5, true)), g (3, (2, false)), g (4, (4, true)), g (4, (5, false))) == (true, false, true, false) then 1 else 2",
+    );
     // builtins
     agrees("if len \"abcd\" == 4 then 1 else 2");
     agrees("if len \"abcd\" == 5 then 1 else 2");
@@ -197,6 +212,19 @@ fn unknown_variable() {
     assert!(matches!(
         compiler.compile(&program, &ResultKind::ExitCode, ""),
         Err(CodegenError::UnknownVariable { name, .. }) if name == "foo"
+    ));
+}
+
+#[test]
+fn non_exhaustive_match() {
+    let program = surface_to_core(Parser::parse("match 1 { 2 => 3 }").unwrap()).unwrap();
+    let context = Context::create();
+    let mut compiler = Compiler::new(&context, "test").unwrap();
+    assert!(matches!(
+        compiler.compile(&program, &ResultKind::ExitCode, ""),
+        Err(CodegenError::PatternMatch(
+            PatternMatchError::NonExhaustive { .. }
+        ))
     ));
 }
 

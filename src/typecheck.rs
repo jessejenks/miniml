@@ -252,7 +252,7 @@ impl TypeChecker {
             ast::ExprKind::Unary(op, e) => self.rule_unary(expr.span, *op, e),
             ast::ExprKind::Binary(op, left, right) => self.rule_binary(expr.span, *op, left, right),
             ast::ExprKind::Tuple(elements) => self.rule_tuple(elements),
-            ast::ExprKind::Match(scrutinee, cases) => self.rule_match(scrutinee, cases),
+            ast::ExprKind::Match(scrutinee, arms) => self.rule_match(scrutinee, arms),
         }
     }
 
@@ -463,11 +463,11 @@ impl TypeChecker {
     fn rule_match(
         &mut self,
         scrutinee: &ast::Expr,
-        cases: &[(ast::Pattern, ast::Expr)],
+        arms: &[(ast::Pattern, ast::Expr)],
     ) -> Result<TypeExpr> {
         let t = self.algorithm_j(scrutinee)?;
         let result = self.new_unification_variable(false);
-        for (pattern, body) in cases {
+        for (pattern, body) in arms {
             let mut leaves = Vec::new();
             self.unify_pattern(false, pattern, &t, &mut leaves)?;
             let pop_count = leaves.len();

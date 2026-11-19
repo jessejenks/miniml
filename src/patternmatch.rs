@@ -471,16 +471,16 @@ pub fn debug_pattern_matching(expr: &ast::Expr, source: &str) -> Result<(), Patt
             }
             Ok(())
         }
-        ast::ExprKind::Match(scrutinee, cases) => {
+        ast::ExprKind::Match(scrutinee, arms) => {
             debug_pattern_matching(scrutinee, source)?;
-            for (_, body) in cases {
+            for (_, body) in arms {
                 debug_pattern_matching(body, source)?;
             }
-            let tree = MatchCompiler::compile(expr.span, cases, true)?;
+            let tree = MatchCompiler::compile(expr.span, arms, true)?;
             eprintln!("source:\n{}", source_text(source, expr.span));
             eprintln!("tree:\n{tree}");
             eprintln!("debug:");
-            debug_tree(&tree, cases, source, 0)?;
+            debug_tree(&tree, arms, source, 0)?;
             eprintln!();
             Ok(())
         }
@@ -489,7 +489,7 @@ pub fn debug_pattern_matching(expr: &ast::Expr, source: &str) -> Result<(), Patt
 
 fn debug_tree(
     tree: &Tree,
-    cases: &[(ast::Pattern, ast::Expr)],
+    arms: &[(ast::Pattern, ast::Expr)],
     source: &str,
     depth: usize,
 ) -> Result<(), PatternMatchError> {
@@ -500,7 +500,7 @@ fn debug_tree(
             Ok(())
         }
         Tree::Leaf(arm, vars) => {
-            let (pattern, body) = &cases[arm.0];
+            let (pattern, body) = &arms[arm.0];
             eprintln!(
                 "{indent}arm {arm}: {} => {}",
                 source_text(source, pattern.span),
@@ -520,14 +520,14 @@ fn debug_tree(
         }
         Tree::Branch(var, branch) => {
             eprintln!("{indent}match# {var}");
-            debug_branch(branch, cases, source, depth)
+            debug_branch(branch, arms, source, depth)
         }
     }
 }
 
 fn debug_branch(
     branch: &Branch,
-    cases: &[(ast::Pattern, ast::Expr)],
+    arms: &[(ast::Pattern, ast::Expr)],
     source: &str,
     depth: usize,
 ) -> Result<(), PatternMatchError> {
@@ -535,17 +535,17 @@ fn debug_branch(
     match branch {
         Branch::Literal(literal, matched, alternate) => {
             eprintln!("{indent}| {literal} =>");
-            debug_tree(matched, cases, source, depth + 1)?;
+            debug_tree(matched, arms, source, depth + 1)?;
             if let Some(alternate) = alternate {
                 eprintln!("{indent}| _ =>");
-                debug_tree(alternate, cases, source, depth + 1)?;
+                debug_tree(alternate, arms, source, depth + 1)?;
             }
             Ok(())
         }
         Branch::Tuple(vars, matched) => {
             let vars: Vec<String> = vars.iter().map(ToString::to_string).collect();
             eprintln!("{indent}| ({}) =>", vars.join(", "));
-            debug_tree(matched, cases, source, depth + 1)
+            debug_tree(matched, arms, source, depth + 1)
         }
     }
 }

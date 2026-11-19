@@ -356,7 +356,7 @@ impl<'ctx> Compiler<'ctx> {
     pub(super) fn merge(
         &self,
         name: &str,
-        branches: [(IntValue<'ctx>, BasicBlock<'ctx>); 2],
+        branches: &[(IntValue<'ctx>, BasicBlock<'ctx>)],
     ) -> Result<IntValue<'ctx>> {
         let function = self
             .insert_block()
@@ -366,13 +366,13 @@ impl<'ctx> Compiler<'ctx> {
             .context
             .append_basic_block(function, &format!("{name}.end"));
         for (_, block) in branches {
-            self.builder.position_at_end(block);
+            self.builder.position_at_end(*block);
             self.builder.build_unconditional_branch(merge)?;
         }
         self.builder.position_at_end(merge);
         let phi = self.builder.build_phi(self.word, name)?;
         for (value, block) in branches {
-            phi.add_incoming(&[(&value, block)]);
+            phi.add_incoming(&[(value, *block)]);
         }
         Ok(phi.as_basic_value().into_int_value())
     }

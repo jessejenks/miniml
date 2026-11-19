@@ -1,7 +1,13 @@
-use inkwell::{IntPredicate, module::Linkage, values::IntValue};
+use std::collections::HashMap;
+
+use inkwell::{IntPredicate, basic_block::BasicBlock, module::Linkage, values::IntValue};
 
 use super::{Compiler, Result};
-use crate::{ast, codegen::Tag};
+use crate::{
+    ast,
+    codegen::Tag,
+    patternmatch::{Arm, Branch, MatchCompiler, MatchVar, Tree},
+};
 
 impl<'ctx> Compiler<'ctx> {
     pub(super) fn compile_expression(&mut self, expr: &ast::Expr) -> Result<IntValue<'ctx>> {
@@ -59,10 +65,24 @@ impl<'ctx> Compiler<'ctx> {
                 let else_value = self.compile_expression(alternative)?;
                 let else_end = self.insert_block();
 
-                self.merge("if", [(then_value, then_end), (else_value, else_end)])
+                self.merge("if", &[(then_value, then_end), (else_value, else_end)])
             }
             ast::ExprKind::Tuple(elements) => self.compile_tuple(elements),
-            ast::ExprKind::Match(_, _) => todo!(),
+            ast::ExprKind::Match(scrutinee, arms) => {
+                let arm_blocks = self.compile_match(expr.span, scrutinee, arms)?;
+                let mut results = Vec::new();
+                for ((_, body), entry) in arms.iter().zip(arm_blocks) {
+                    if let Some((block, count)) = entry {
+                        self.builder.position_at_end(block);
+                        let value = self.compile_expression(body)?;
+                        for _ in 0..count {
+                            self.end_let()?;
+                        }
+                        results.push((value, self.insert_block()));
+                    }
+                }
+                self.merge("match", &results)
+            }
         }
     }
 
@@ -115,8 +135,122 @@ impl<'ctx> Compiler<'ctx> {
                 self.builder.position_at_end(else_block);
                 self.compile_expression_tail(alternative)
             }
-            ast::ExprKind::Match(_, _) => todo!(),
+            ast::ExprKind::Match(scrutinee, arms) => {
+                let arm_blocks = self.compile_match(expr.span, scrutinee, arms)?;
+                for ((_, body), entry) in arms.iter().zip(arm_blocks) {
+                    if let Some((block, _)) = entry {
+                        self.builder.position_at_end(block);
+                        self.compile_expression_tail(body)?;
+                    }
+                }
+                Ok(())
+            }
         }
+    }
+
+    /// Returns each arm's entry block and binder count, `None` for arms no leaf reaches
+    fn compile_match(
+        &mut self,
+        span: ast::Span,
+        scrutinee: &ast::Expr,
+        arms: &[(ast::Pattern, ast::Expr)],
+    ) -> Result<Vec<Option<(BasicBlock<'ctx>, usize)>>> {
+        let tree = MatchCompiler::compile(span, arms, true)?;
+        let value = self.compile_expression(scrutinee)?;
+        let mut vars = HashMap::from([(MatchVar(0), value)]);
+        let mut arm_blocks = vec![None; arms.len()];
+        self.compile_tree(&tree, &mut vars, &mut arm_blocks)?;
+        Ok(arm_blocks)
+    }
+
+    fn compile_tree(
+        &mut self,
+        tree: &Tree,
+        vars: &mut HashMap<MatchVar, IntValue<'ctx>>,
+        arm_blocks: &mut [Option<(BasicBlock<'ctx>, usize)>],
+    ) -> Result<()> {
+        match tree {
+            Tree::Err => unreachable!("compiled with fail_early"),
+            Tree::Leaf(Arm(arm), bound) => {
+                for var in bound {
+                    self.let_in(vars[var])?;
+                }
+                let (block, _) = *arm_blocks[*arm].get_or_insert_with(|| {
+                    (self.new_block(&format!("match.arm{arm}")), bound.len())
+                });
+                self.builder.build_unconditional_branch(block)?;
+                Ok(())
+            }
+            Tree::Branch(var, Branch::Tuple(fields, rest)) => {
+                let tuple = vars[var];
+                for (i, field) in fields.iter().enumerate() {
+                    let value = self.load_field(tuple, i)?;
+                    vars.insert(*field, value);
+                }
+                self.compile_tree(rest, vars, arm_blocks)
+            }
+            Tree::Branch(_, Branch::Literal(_, matched, None)) => {
+                self.compile_tree(matched, vars, arm_blocks)
+            }
+            Tree::Branch(var, Branch::Literal(lit, matched, Some(alternate))) => {
+                let is_match = self.literal_equals(vars[var], lit)?;
+                let matched_block = self.new_block("match.then");
+                let alternate_block = self.new_block("match.else");
+                self.builder
+                    .build_conditional_branch(is_match, matched_block, alternate_block)?;
+                self.builder.position_at_end(matched_block);
+                self.compile_tree(matched, vars, arm_blocks)?;
+                self.builder.position_at_end(alternate_block);
+                self.compile_tree(alternate, vars, arm_blocks)
+            }
+        }
+    }
+
+    fn literal_equals(&self, value: IntValue<'ctx>, lit: &ast::Literal) -> Result<IntValue<'ctx>> {
+        let lit_value = self.compile_literal(lit)?;
+        if let ast::Literal::String(_) = lit {
+            let eq = self
+                .builder
+                .build_direct_call(self.miniml_equal, &[value.into(), lit_value.into()], "eq")?
+                .try_as_basic_value()
+                .expect_basic("miniml_equal returns a value")
+                .into_int_value();
+            let zero = self.word.const_zero();
+            Ok(self
+                .builder
+                .build_int_compare(IntPredicate::NE, eq, zero, "lit.eq")?)
+        } else {
+            let eq = IntPredicate::EQ;
+            Ok(self
+                .builder
+                .build_int_compare(eq, value, lit_value, "lit.eq")?)
+        }
+    }
+
+    fn new_block(&self, name: &str) -> BasicBlock<'ctx> {
+        let function = self
+            .insert_block()
+            .get_parent()
+            .expect("builder is inside a function");
+        self.context.append_basic_block(function, name)
+    }
+
+    fn load_field(&self, tuple: IntValue<'ctx>, i: usize) -> Result<IntValue<'ctx>> {
+        let ptr = self
+            .builder
+            .build_int_to_ptr(tuple, self.ptr_type, "tuple")?;
+        let field = unsafe {
+            self.builder.build_gep(
+                self.word,
+                ptr,
+                &[self.word.const_int(i as u64, false)],
+                "tuple.field",
+            )?
+        };
+        Ok(self
+            .builder
+            .build_load(self.word, field, "field")?
+            .into_int_value())
     }
 
     fn bind_pattern(&mut self, pattern: &ast::Pattern, value: IntValue<'ctx>) -> Result<usize> {
@@ -127,23 +261,9 @@ impl<'ctx> Compiler<'ctx> {
                 Ok(1)
             }
             ast::PatternKind::Tuple(patterns) => {
-                let ptr = self
-                    .builder
-                    .build_int_to_ptr(value, self.ptr_type, "tuple")?;
                 let mut count = 0;
                 for (i, pattern) in patterns.iter().enumerate() {
-                    let field = unsafe {
-                        self.builder.build_gep(
-                            self.word,
-                            ptr,
-                            &[self.word.const_int(i as u64, false)],
-                            "tuple.field",
-                        )?
-                    };
-                    let field = self
-                        .builder
-                        .build_load(self.word, field, "field")?
-                        .into_int_value();
+                    let field = self.load_field(value, i)?;
                     count += self.bind_pattern(pattern, field)?;
                 }
                 Ok(count)
@@ -151,13 +271,19 @@ impl<'ctx> Compiler<'ctx> {
         }
     }
 
+    fn compile_literal(&self, lit: &ast::Literal) -> Result<IntValue<'ctx>> {
+        match lit {
+            ast::Literal::Unit => self.box_const(0),
+            ast::Literal::Bool(b) => self.box_const(i64::from(*b)),
+            ast::Literal::Char(c) => self.box_const(*c as i64),
+            ast::Literal::Int(n) => self.box_const(*n),
+            ast::Literal::String(s) => self.compile_string(s),
+        }
+    }
+
     fn compile_primitive(&mut self, expr: &ast::Expr) -> Result<IntValue<'ctx>> {
         match &expr.kind {
-            ast::ExprKind::Literal(ast::Literal::Unit) => self.box_const(0),
-            ast::ExprKind::Literal(ast::Literal::Bool(b)) => self.box_const(i64::from(*b)),
-            ast::ExprKind::Literal(ast::Literal::Char(c)) => self.box_const(*c as i64),
-            ast::ExprKind::Literal(ast::Literal::Int(n)) => self.box_const(*n),
-            ast::ExprKind::Literal(ast::Literal::String(s)) => self.compile_string(s),
+            ast::ExprKind::Literal(lit) => self.compile_literal(lit),
             ast::ExprKind::Unary(op, expr) => {
                 let value = self.compile_expression(expr)?;
                 let value = self.unbox_int(value)?;
@@ -320,7 +446,7 @@ impl<'ctx> Compiler<'ctx> {
         let r = self.compile_expression(right)?;
         let right_end = self.insert_block();
 
-        self.merge(name, [(l, short_block), (r, right_end)])
+        self.merge(name, &[(l, short_block), (r, right_end)])
     }
 
     fn compare(

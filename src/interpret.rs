@@ -72,10 +72,10 @@ impl Display for Expr {
                 }
                 write!(f, ")")
             }
-            Expr::Match(scrutinee, cases) => {
+            Expr::Match(scrutinee, arms) => {
                 write!(f, "(match {scrutinee}")?;
                 write!(f, " {{ ")?;
-                for (i, (pattern, expr)) in cases.iter().enumerate() {
+                for (i, (pattern, expr)) in arms.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -114,10 +114,9 @@ fn to_spanless(expr: &ast::Expr) -> Expr {
             Box::new(to_spanless(right)),
         ),
         ast::ExprKind::Tuple(elements) => Expr::Tuple(elements.iter().map(to_spanless).collect()),
-        ast::ExprKind::Match(scrutinee, cases) => Expr::Match(
+        ast::ExprKind::Match(scrutinee, arms) => Expr::Match(
             Box::new(to_spanless(scrutinee)),
-            cases
-                .iter()
+            arms.iter()
                 .map(|(p, e)| (to_spanless_pattern(p), to_spanless(e)))
                 .collect(),
         ),
@@ -197,10 +196,9 @@ fn shift(i: i64, c: i64, expr: Expr) -> Expr {
         Expr::Tuple(elements) => {
             Expr::Tuple(elements.into_iter().map(|e| shift(i, c, e)).collect())
         }
-        Expr::Match(scrutinee, cases) => Expr::Match(
+        Expr::Match(scrutinee, arms) => Expr::Match(
             Box::new(shift(i, c, *scrutinee)),
-            cases
-                .into_iter()
+            arms.into_iter()
                 .map(|(p, e)| {
                     let count = leaf_count(&p);
                     (p, shift(i, c + count, e))
@@ -258,15 +256,15 @@ fn substitute(t: Expr, n: i64, expr: Expr) -> Expr {
                 .map(|e| substitute(e, n, expr.clone()))
                 .collect(),
         ),
-        Expr::Match(scrutinee, cases) => {
-            let new_cases = cases
+        Expr::Match(scrutinee, arms) => {
+            let new_arms = arms
                 .into_iter()
                 .map(|(p, e)| {
                     let count = leaf_count(&p);
                     (p, substitute(e, n + count, shift(count, 0, expr.clone())))
                 })
                 .collect();
-            Expr::Match(Box::new(substitute(*scrutinee, n, expr)), new_cases)
+            Expr::Match(Box::new(substitute(*scrutinee, n, expr)), new_arms)
         }
     }
 }
@@ -482,15 +480,15 @@ fn cbv(expr: Expr) -> Expr {
             }
         }
         Expr::Tuple(elements) => Expr::Tuple(elements.into_iter().map(cbv).collect()),
-        Expr::Match(scrutinee, cases) => {
+        Expr::Match(scrutinee, arms) => {
             let v = cbv(*scrutinee);
-            for (p, e) in &cases {
+            for (p, e) in &arms {
                 let mut leaves = Vec::new();
                 if get_leaves(p, &v, &mut leaves) {
                     return cbv(leaves.into_iter().rev().fold(e.clone(), beta));
                 }
             }
-            Expr::Match(Box::new(v), cases)
+            Expr::Match(Box::new(v), arms)
         }
         x => x,
     }

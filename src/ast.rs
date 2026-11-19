@@ -191,10 +191,10 @@ impl Display for ExprKind {
                 }
                 write!(f, ")")
             }
-            ExprKind::Match(expr, cases) => {
-                write!(f, "(match {expr}")?;
+            ExprKind::Match(scrutinee, arms) => {
+                write!(f, "(match {scrutinee}")?;
                 write!(f, " {{ ")?;
-                for (i, (pattern, expr)) in cases.iter().enumerate() {
+                for (i, (pattern, expr)) in arms.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }

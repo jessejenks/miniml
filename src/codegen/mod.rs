@@ -11,6 +11,7 @@ use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
 
 use crate::ast;
+use crate::patternmatch::PatternMatchError;
 
 mod expr;
 mod machine;
@@ -21,6 +22,10 @@ mod tests;
 
 #[derive(Debug, Error, Diagnostic)]
 pub enum CodegenError {
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    PatternMatch(#[from] PatternMatchError),
+
     #[error("LLVM builder error: {0}")]
     #[diagnostic(code(codegen::llvm))]
     Builder(#[from] BuilderError),

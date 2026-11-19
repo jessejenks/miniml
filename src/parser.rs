@@ -514,9 +514,9 @@ impl<'a> Parser<'a> {
         } else {
             Some(Box::new(self.expression(0)?))
         };
-        let (cases, end) = self.match_body()?;
+        let (arms, end) = self.match_body()?;
         Ok(surface::Expr::new(
-            surface::ExprKind::Match(scrutinee, cases),
+            surface::ExprKind::Match(scrutinee, arms),
             start,
             end,
         ))
@@ -526,24 +526,24 @@ impl<'a> Parser<'a> {
         &mut self,
     ) -> Result<(Vec<(surface::Pattern<'a>, surface::Expr<'a>)>, usize), ParseError> {
         self.expect(Token::LBrace)?;
-        let mut cases = Vec::new();
+        let mut arms = Vec::new();
         loop {
             let pat = self.pattern()?;
             self.expect(Token::WideArrow)?;
             let expr = self.expression(0)?;
-            cases.push((pat, expr));
+            arms.push((pat, expr));
             match self.peek()? {
                 Some((_, Token::Comma, _)) => {
                     self.next()?;
                     if let Some((_, Token::RBrace, end)) = self.peek()? {
                         self.next()?;
-                        return Ok((cases, end));
+                        return Ok((arms, end));
                     }
                     // continue
                 }
                 Some((_, Token::RBrace, end)) => {
                     self.next()?;
-                    return Ok((cases, end));
+                    return Ok((arms, end));
                 }
                 Some((start, tok, end)) => {
                     return Err(ParseError::UnexpectedTokenExpecting {

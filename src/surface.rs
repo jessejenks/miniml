@@ -166,13 +166,13 @@ impl Display for ExprKind<'_> {
                 }
                 write!(f, ")")
             }
-            ExprKind::Match(scrutinee, cases) => {
+            ExprKind::Match(scrutinee, arms) => {
                 write!(f, "(match")?;
                 if let Some(expr) = scrutinee {
                     write!(f, " {expr}")?;
                 }
                 write!(f, " {{ ")?;
-                for (i, (pattern, expr)) in cases.iter().enumerate() {
+                for (i, (pattern, expr)) in arms.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
