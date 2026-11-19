@@ -113,6 +113,7 @@ pub struct Identifier<'a> {
 pub enum ExprKind<'a> {
     Literal(Literal<'a>),
     Variable(&'a str),
+    Path(Vec<Identifier<'a>>),
     Application(Box<Expr<'a>>, Box<Expr<'a>>),
     Abstraction(Vec<Identifier<'a>>, Box<Expr<'a>>),
     LetIn(bool, Pattern<'a>, Box<Expr<'a>>, Box<Expr<'a>>),
@@ -129,6 +130,15 @@ impl Display for ExprKind<'_> {
         match self {
             ExprKind::Literal(lit) => lit.fmt(f),
             ExprKind::Variable(x) => write!(f, "{x}"),
+            ExprKind::Path(names) => {
+                for (i, name) in names.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, "::")?;
+                    }
+                    write!(f, "{}", name.name)?;
+                }
+                Ok(())
+            }
             ExprKind::Application(left, right) => write!(f, "({left} {right})"),
             ExprKind::Abstraction(xs, body) => {
                 if xs.is_empty() {

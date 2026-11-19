@@ -134,6 +134,8 @@ pub enum Token<'a> {
     RBrace,
     Comma,
     Semi,
+    Colon,
+    ColonColon,
     Bang,
     BangEqual,
     Tilde,
@@ -237,6 +239,14 @@ impl<'a> Iterator for Lexer<'a> {
             '}' => Token::RBrace,
             ',' => Token::Comma,
             ';' => Token::Semi,
+            ':' => {
+                if self.peek_char() == Some(':') {
+                    self.chars.next();
+                    Token::ColonColon
+                } else {
+                    Token::Colon
+                }
+            }
             '!' => {
                 if self.peek_char() == Some('=') {
                     self.chars.next();

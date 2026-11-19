@@ -43,6 +43,7 @@ fn surface_to_core_inner<'a>(
             Some(index) => ast::ExprKind::BoundVariable(i64::try_from(index).unwrap()),
             None => ast::ExprKind::FreeVariable(x.to_string()),
         },
+        surface::ExprKind::Path(_) => todo!(),
         surface::ExprKind::Application(f, x) => ast::ExprKind::Application(
             Box::new(surface_to_core_inner(scope, *f)?),
             Box::new(surface_to_core_inner(scope, *x)?),

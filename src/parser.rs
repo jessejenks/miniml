@@ -30,6 +30,13 @@ pub enum ParseError {
         span: SourceSpan,
     },
 
+    #[error("pad path")]
+    #[diagnostic(code(parser::bad_path))]
+    BadPath {
+        #[label("qualified names cannot contain spaces")]
+        span: SourceSpan,
+    },
+
     #[error("unexpected end of file")]
     #[diagnostic(code(parser::unexpected_eof))]
     #[label("input ended here")]
@@ -348,11 +355,39 @@ impl<'a> Parser<'a> {
                 start,
                 end,
             )),
-            Token::Identifier(x) => Ok(surface::Expr::new(
-                surface::ExprKind::Variable(x),
-                start,
-                end,
-            )),
+            Token::Identifier(name) => match self.peek()? {
+                Some((colon_start, Token::ColonColon, _)) if colon_start == end => {
+                    let mut qualifiers = vec![surface::Identifier {
+                        name,
+                        span: (start..end).into(),
+                    }];
+                    let mut new_end = end;
+                    while let Some((colon_start, Token::ColonColon, colon_end)) = self.peek()? {
+                        if colon_start != new_end {
+                            break;
+                        }
+                        self.next()?;
+                        let ident = self.expect_identifier()?;
+                        if ident.span.start != colon_end {
+                            return Err(ParseError::BadPath {
+                                span: (colon_start..ident.span.end).into(),
+                            });
+                        }
+                        new_end = ident.span.end;
+                        qualifiers.push(ident);
+                    }
+                    Ok(surface::Expr::new(
+                        surface::ExprKind::Path(qualifiers),
+                        start,
+                        new_end,
+                    ))
+                }
+                _ => Ok(surface::Expr::new(
+                    surface::ExprKind::Variable(name),
+                    start,
+                    end,
+                )),
+            },
             Token::Keyword(Keyword::Fun) => self.abstraction(start),
             Token::Keyword(Keyword::Let) => self.let_in(start),
             Token::Keyword(Keyword::If) => self.if_else(start),
@@ -982,6 +1017,24 @@ mod tests {
                 "for {source:?}"
             );
         }
+    }
+
+    #[test]
+    fn detects_bad_paths() {
+        let err = parse_err("Foo:: Bar");
+        let ParseError::BadPath { .. } = err else {
+            panic!("wrong error: {err:?}");
+        };
+
+        let err = parse_err("Foo::Bar:: Baz");
+        let ParseError::BadPath { .. } = err else {
+            panic!("wrong error: {err:?}");
+        };
+
+        let err = parse_err("Foo::Bar ::Baz");
+        let ParseError::ExpectedEOF { .. } = err else {
+            panic!("wrong error: {err:?}");
+        };
     }
 
     #[test]
