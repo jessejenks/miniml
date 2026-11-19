@@ -281,7 +281,7 @@ mod tests {
     use crate::parser::Parser;
 
     fn elab(source: &str) -> ast::Expr {
-        surface_to_core(Parser::parse(source).unwrap()).unwrap()
+        surface_to_core(Parser::parse(source).unwrap().0).unwrap()
     }
 
     #[test]
@@ -325,15 +325,15 @@ mod tests {
     #[test]
     fn detects_bad_patterns() {
         assert!(matches!(
-            surface_to_core(Parser::parse("let rec (x, y) = (1, 2); x + y").unwrap()),
+            surface_to_core(Parser::parse("let rec (x, y) = (1, 2); x + y").unwrap().0),
             Err(ElaborationError::DestructuredLetRec { .. })
         ));
         assert!(matches!(
-            surface_to_core(Parser::parse("let (x, y, x) = (1, 2, 3); x").unwrap()),
+            surface_to_core(Parser::parse("let (x, y, x) = (1, 2, 3); x").unwrap().0),
             Err(ElaborationError::MultipleBindings { .. })
         ));
         assert!(matches!(
-            surface_to_core(Parser::parse("let 1 = f x; ()").unwrap()),
+            surface_to_core(Parser::parse("let 1 = f x; ()").unwrap().0),
             Err(ElaborationError::PatternContainsLiterals { .. })
         ));
     }

@@ -213,3 +213,33 @@ impl Display for Expr<'_> {
         self.kind.fmt(f)
     }
 }
+
+pub struct TypeDecl<'a> {
+    pub name: Identifier<'a>,
+    pub type_parameters: Vec<Identifier<'a>>,
+    pub constructors: Vec<(Identifier<'a>, Vec<Identifier<'a>>)>,
+}
+
+impl Display for TypeDecl<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "type {}", self.name.name)?;
+        for type_parameter in &self.type_parameters {
+            write!(f, " {}", type_parameter.name)?;
+        }
+        for (i, (constructor, type_args)) in self.constructors.iter().enumerate() {
+            if i == 0 {
+                write!(f, "\n  = ")?;
+            } else {
+                write!(f, "\n  | ")?;
+            }
+            write!(f, "{}", constructor.name)?;
+            if type_args.is_empty() {
+                continue;
+            }
+            for type_arg in type_args {
+                write!(f, " {}", type_arg.name)?;
+            }
+        }
+        write!(f, ";")
+    }
+}

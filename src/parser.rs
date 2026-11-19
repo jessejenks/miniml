@@ -104,23 +104,27 @@ pub struct Parser<'a> {
     source: &'a str,
     lexer: Peekable<Lexer<'a>>,
     prev_token: Option<Spanned<'a>>,
+    decls: Vec<surface::TypeDecl<'a>>,
 }
 
 impl<'a> Parser<'a> {
-    pub fn parse(source: &'a str) -> Result<surface::Expr<'a>, ParseError> {
+    pub fn parse(
+        source: &'a str,
+    ) -> Result<(surface::Expr<'a>, Vec<surface::TypeDecl<'a>>), ParseError> {
         let mut p = Parser {
             source,
             lexer: Lexer::new(source).peekable(),
             prev_token: None,
+            decls: Vec::new(),
         };
-        let program = p.block_body(0)?;
+        let program = p.block_body(0, true)?;
         if let Some((start, tok, end)) = p.peek()? {
             return Err(ParseError::ExpectedEOF {
                 tok: format!("{tok:?}"),
                 span: (start..end).into(),
             });
         }
-        Ok(program)
+        Ok((program, p.decls))
     }
 
     fn next(&mut self) -> Result<Option<Spanned<'a>>, LexError> {
@@ -174,7 +178,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn block_body(&mut self, start: usize) -> Result<surface::Expr<'a>, ParseError> {
+    fn block_body(
+        &mut self,
+        start: usize,
+        is_top_level: bool,
+    ) -> Result<surface::Expr<'a>, ParseError> {
         if matches!(self.peek()?, None | Some((_, Token::RBrace, _))) {
             return Ok(surface::Expr::new(
                 surface::ExprKind::Literal(surface::Literal::Unit),
@@ -182,33 +190,60 @@ impl<'a> Parser<'a> {
                 start,
             ));
         }
-        if let Some((let_start, Token::Keyword(Keyword::Let), _)) = self.peek()? {
-            self.next()?;
-            let is_recursive = self.chomp_if_next_is(Token::Keyword(Keyword::Rec))?;
-            let pattern = self.pattern()?;
-            self.expect(Token::Equal)?;
-            let expr = self.expression(0)?;
-            let body_start = if let Some((_, Token::RBrace, brace_end)) = self.prev_token {
-                self.chomp_if_next_is(Token::Semi)?;
-                brace_end
-            } else {
-                let (_, _, semi_end) = self.expect(Token::Semi)?;
-                semi_end
-            };
-            let body = self.block_body(body_start)?;
-            let end = body.span.end;
-            return Ok(surface::Expr::new(
-                surface::ExprKind::LetIn(is_recursive, pattern, Box::new(expr), Box::new(body)),
-                let_start,
-                end,
-            ));
+        match self.peek()? {
+            Some((let_start, Token::Keyword(Keyword::Let), _)) => {
+                self.next()?;
+                let is_recursive = self.chomp_if_next_is(Token::Keyword(Keyword::Rec))?;
+                let pattern = self.pattern()?;
+                self.expect(Token::Equal)?;
+                let expr = self.expression(0)?;
+                let body_start = if let Some((_, Token::RBrace, brace_end)) = self.prev_token {
+                    self.chomp_if_next_is(Token::Semi)?;
+                    brace_end
+                } else {
+                    let (_, _, semi_end) = self.expect(Token::Semi)?;
+                    semi_end
+                };
+                let body = self.block_body(body_start, is_top_level)?;
+                let end = body.span.end;
+                return Ok(surface::Expr::new(
+                    surface::ExprKind::LetIn(is_recursive, pattern, Box::new(expr), Box::new(body)),
+                    let_start,
+                    end,
+                ));
+            }
+            Some((_, Token::Keyword(Keyword::Type), _)) if is_top_level => {
+                self.next()?;
+                let name = self.expect_identifier()?;
+                let mut type_parameters = Vec::new();
+                while let Some((param_start, Token::Identifier(t), param_end)) = self.peek()? {
+                    self.next()?;
+                    type_parameters.push(surface::Identifier {
+                        name: t,
+                        span: (param_start..param_end).into(),
+                    });
+                }
+                self.expect(Token::Equal)?;
+                let mut constructors = vec![self.constructor()?];
+                while self.chomp_if_next_is(Token::Pipe)? {
+                    constructors.push(self.constructor()?);
+                }
+                let (_, _, end) = self.expect(Token::Semi)?;
+                self.decls.push(surface::TypeDecl {
+                    name,
+                    type_parameters,
+                    constructors,
+                });
+                return self.block_body(end, is_top_level);
+            }
+            _ => {}
         }
         let expr = self.expression(0)?;
         let ended_with_block = self.just_closed_block();
         let at_end = matches!(self.peek()?, None | Some((_, Token::RBrace, _)));
         if self.chomp_if_next_is(Token::Semi)? || (ended_with_block && !at_end) {
             let (_, _, rest_start) = self.prev_token.expect("just read `;` or `}`");
-            let rest = self.block_body(rest_start)?;
+            let rest = self.block_body(rest_start, is_top_level)?;
             let seq_start = expr.span.start;
             let end = rest.span.end;
             Ok(surface::Expr::new(
@@ -219,6 +254,21 @@ impl<'a> Parser<'a> {
         } else {
             Ok(expr)
         }
+    }
+
+    fn constructor(
+        &mut self,
+    ) -> Result<(surface::Identifier<'a>, Vec<surface::Identifier<'a>>), ParseError> {
+        let constructor = self.expect_identifier()?;
+        let mut type_args = Vec::new();
+        while let Some((arg_start, Token::Identifier(t), arg_end)) = self.peek()? {
+            self.next()?;
+            type_args.push(surface::Identifier {
+                name: t,
+                span: (arg_start..arg_end).into(),
+            });
+        }
+        Ok((constructor, type_args))
     }
 
     fn expression(&mut self, min_bp: u8) -> Result<surface::Expr<'a>, ParseError> {
@@ -410,7 +460,7 @@ impl<'a> Parser<'a> {
                 Ok(surface::Expr::new(e.kind, start, paren_end))
             }
             Token::LBrace => {
-                let body = self.block_body(end)?;
+                let body = self.block_body(end, false)?;
                 let (_, _, block_end) = self.expect(Token::RBrace)?;
                 Ok(surface::Expr::new(body.kind, start, block_end))
             }
@@ -632,12 +682,16 @@ mod tests {
     use super::*;
 
     fn parse(source: &str) -> surface::Expr<'_> {
+        Parser::parse(source).unwrap().0
+    }
+
+    fn parse_decls(source: &str) -> (surface::Expr<'_>, Vec<surface::TypeDecl<'_>>) {
         Parser::parse(source).unwrap()
     }
 
     fn parse_err(source: &str) -> ParseError {
         match Parser::parse(source) {
-            Ok(e) => panic!("expected a parse error for {source:?}, but got {e}"),
+            Ok((e, _)) => panic!("expected a parse error for {source:?}, but got {e}"),
             Err(e) => e,
         }
     }
@@ -857,6 +911,45 @@ mod tests {
         assert_eq!(
             parse("match x { ((), (1, ()), ()) => 2 }").to_string(),
             "(match x { ((), (1, ()), ()) => 2 })"
+        );
+    }
+
+    #[test]
+    fn type_declarations() {
+        let (p, ds) = parse_decls("type None = None;");
+        assert_eq!(p.to_string(), "()");
+        assert_eq!(ds.len(), 1);
+        assert_eq!(ds[0].to_string(), "type None\n  = None;");
+
+        let (p, ds) = parse_decls("type Foo = Bar | Baz Int;");
+        assert_eq!(p.to_string(), "()");
+        assert_eq!(ds.len(), 1);
+        assert_eq!(ds[0].to_string(), "type Foo\n  = Bar\n  | Baz Int;");
+
+        let (p, ds) = parse_decls("type Maybe a = Just a | Nothing;");
+        assert_eq!(p.to_string(), "()");
+        assert_eq!(ds.len(), 1);
+        assert_eq!(ds[0].to_string(), "type Maybe a\n  = Just a\n  | Nothing;");
+
+        let (p, ds) = parse_decls("type Either a b = Left a | Right b;");
+        assert_eq!(p.to_string(), "()");
+        assert_eq!(ds.len(), 1);
+        assert_eq!(
+            ds[0].to_string(),
+            "type Either a b\n  = Left a\n  | Right b;"
+        );
+
+        let (p, ds) = parse_decls(
+            "type Expr = Var Int | Abs Expr | App Expr Expr; let e1 = Expr::Var 0; let e2 = Expr::Abs e1; let e = Expr::App e1 e2; e",
+        );
+        assert_eq!(
+            p.to_string(),
+            "(let e1 = (Expr::Var 0); (let e2 = (Expr::Abs e1); (let e = ((Expr::App e1) e2); e)))"
+        );
+        assert_eq!(ds.len(), 1);
+        assert_eq!(
+            ds[0].to_string(),
+            "type Expr\n  = Var Int\n  | Abs Expr\n  | App Expr Expr;"
         );
     }
 
