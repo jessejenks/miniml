@@ -362,7 +362,9 @@ Notes:
 - [x] Strings and characters
 - [x] Tuple types
 - [ ] Algebraic data types
-- [ ] Pattern matching
+- Pattern matching
+  - [x] Tuples
+  - [ ] ADTs
 
 ---
 
