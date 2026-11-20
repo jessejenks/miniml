@@ -807,10 +807,10 @@ impl TypeChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{elaborate::surface_to_core, parser::Parser};
+    use crate::{elaborate::elaborate, parser::Parser};
 
     fn check(source: &str) -> Result<String> {
-        let program = surface_to_core(Parser::parse(source).unwrap().0).unwrap();
+        let (program, _) = elaborate(Parser::parse(source).unwrap().0, &[]).unwrap();
         TypeChecker::new()
             .infer(&program)
             .map(|scheme| scheme.to_string())

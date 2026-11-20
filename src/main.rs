@@ -9,7 +9,7 @@ mod surface;
 mod typecheck;
 
 use crate::codegen::{Compiler, ResultKind};
-use crate::elaborate::surface_to_core;
+use crate::elaborate::elaborate;
 use crate::interpret::interpret;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
@@ -87,15 +87,24 @@ fn main() -> miette::Result<()> {
         return Ok(());
     }
 
-    let (program, _) = Parser::parse(&source).map_err(|e| report(e, &args.path, &source))?;
+    let (program, decls) = Parser::parse(&source).map_err(|e| report(e, &args.path, &source))?;
     if args.parse {
+        for decl in &decls {
+            println!("{decl}");
+        }
+        if !decls.is_empty() {
+            println!();
+        }
         println!("{program}");
         return Ok(());
     }
 
-    let elaborated_program =
-        surface_to_core(program).map_err(|e| report(e, &args.path, &source))?;
+    let (elaborated_program, elaborated_decls) =
+        elaborate(program, &decls).map_err(|e| report(e, &args.path, &source))?;
     if args.elab {
+        for decl in elaborated_decls {
+            println!("{decl}");
+        }
         println!("{elaborated_program}");
         return Ok(());
     }

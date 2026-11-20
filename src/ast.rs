@@ -1,4 +1,5 @@
 use crate::lexer::escape_str;
+use crate::typecheck;
 use std::{fmt::Display, ops::Range};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -215,5 +216,34 @@ pub struct Expr {
 impl Display for Expr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.kind.fmt(f)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct TypeDecl {
+    pub name: String,
+    pub arity: usize,
+    pub constructors: Vec<(String, Vec<typecheck::TypeExpr>)>,
+}
+
+impl Display for TypeDecl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}<{}>", self.name, self.arity)?;
+        for (i, (cons, args)) in self.constructors.iter().enumerate() {
+            if i == 0 {
+                write!(f, "\n  = ")?;
+            } else {
+                write!(f, "\n  | ")?;
+            }
+            write!(f, "{cons}")?;
+            for arg in args {
+                if matches!(arg, typecheck::TypeExpr::Arrow(_, _)) {
+                    write!(f, " ({arg})")?;
+                } else {
+                    write!(f, " {arg}")?;
+                }
+            }
+        }
+        Ok(())
     }
 }

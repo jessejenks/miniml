@@ -497,11 +497,11 @@ fn cbv(expr: Expr) -> Expr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elaborate::surface_to_core;
+    use crate::elaborate::elaborate;
     use crate::parser::Parser;
 
     fn interp(source: &str) -> Expr {
-        interpret(&surface_to_core(Parser::parse(source).unwrap().0).unwrap())
+        interpret(&elaborate(Parser::parse(source).unwrap().0, &[]).unwrap().0)
     }
 
     #[test]

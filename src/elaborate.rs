@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use miette::Diagnostic;
 use miette::SourceSpan;
 use thiserror::Error;
@@ -5,6 +7,7 @@ use thiserror::Error;
 use crate::ast;
 use crate::lexer;
 use crate::surface;
+use crate::typecheck::{TypeExpr, TypeId};
 
 #[derive(Debug, Error, Diagnostic)]
 pub enum ElaborationError {
@@ -27,10 +30,163 @@ pub enum ElaborationError {
         #[label("cannot include literals here")]
         span: SourceSpan,
     },
+    #[error("{name} is declared multiple times")]
+    #[diagnostic(code(elaborator::duplicate_declaration))]
+    DuplicateDeclaration {
+        name: String,
+        #[label("this name has already been declared")]
+        span: SourceSpan,
+    },
+    #[error("unknown type {name}")]
+    #[diagnostic(code(elaborator::unknown_type))]
+    UnknownType {
+        name: String,
+        #[label("this type is not defined")]
+        span: SourceSpan,
+    },
+    #[error("{name} expects {expected} type arguments, but got {actual}")]
+    #[diagnostic(code(elaborator::wrong_type_arity))]
+    WrongTypeArity {
+        name: String,
+        expected: usize,
+        actual: usize,
+        #[label("wrong number of type arguments")]
+        span: SourceSpan,
+    },
 }
 
-pub fn surface_to_core(program: surface::Expr) -> Result<ast::Expr, ElaborationError> {
-    surface_to_core_inner(&mut Vec::new(), program)
+pub fn elaborate(
+    program: surface::Expr,
+    decls: &[surface::TypeDecl],
+) -> Result<(ast::Expr, Vec<ast::TypeDecl>), ElaborationError> {
+    let elaborated_decls = elaborate_type_decls(decls)?;
+    Ok((
+        surface_to_core_inner(&mut Vec::new(), program)?,
+        elaborated_decls,
+    ))
+}
+
+const BUILTIN_TYPES: [(&str, TypeExpr); 5] = [
+    ("Unit", TypeExpr::Unit),
+    ("Bool", TypeExpr::Bool),
+    ("Char", TypeExpr::Char),
+    ("Int", TypeExpr::Int),
+    ("String", TypeExpr::String),
+];
+
+enum TypeName {
+    Builtin(TypeExpr),
+    Declared(TypeId, usize),
+}
+
+pub fn elaborate_type_decls(
+    decls: &[surface::TypeDecl],
+) -> Result<Vec<ast::TypeDecl>, ElaborationError> {
+    let mut types: HashMap<&str, TypeName> = BUILTIN_TYPES
+        .into_iter()
+        .map(|(name, tp)| (name, TypeName::Builtin(tp)))
+        .collect();
+
+    for (i, decl) in decls.iter().enumerate() {
+        let id = TypeId(i64::try_from(i).unwrap());
+        let entry = TypeName::Declared(id, decl.type_parameters.len());
+        if types.insert(decl.name.name, entry).is_some() {
+            return Err(duplicate_decl_error(&decl.name));
+        }
+    }
+
+    decls
+        .iter()
+        .map(|decl| {
+            check_unique(&decl.type_parameters)?;
+            check_unique(decl.constructors.iter().map(|(c, _)| c))?;
+            let constructors = decl
+                .constructors
+                .iter()
+                .map(|(c, fields)| {
+                    let fields = fields
+                        .iter()
+                        .map(|t| elaborate_type(&types, &decl.type_parameters, t))
+                        .collect::<Result<_, _>>()?;
+                    Ok((c.name.to_string(), fields))
+                })
+                .collect::<Result<_, _>>()?;
+            Ok(ast::TypeDecl {
+                name: decl.name.name.to_string(),
+                arity: decl.type_parameters.len(),
+                constructors,
+            })
+        })
+        .collect()
+}
+
+fn check_unique<'a>(
+    idents: impl IntoIterator<Item = &'a surface::Identifier<'a>>,
+) -> Result<(), ElaborationError> {
+    let mut seen = HashSet::new();
+    for ident in idents {
+        if !seen.insert(ident.name) {
+            return Err(duplicate_decl_error(ident));
+        }
+    }
+    Ok(())
+}
+
+fn duplicate_decl_error(ident: &surface::Identifier) -> ElaborationError {
+    ElaborationError::DuplicateDeclaration {
+        name: ident.name.to_string(),
+        span: ident.span.into(),
+    }
+}
+
+fn elaborate_type(
+    types: &HashMap<&str, TypeName>,
+    params: &[surface::Identifier],
+    tp: &surface::TypeExpr,
+) -> Result<TypeExpr, ElaborationError> {
+    match &tp.kind {
+        surface::TypeExprKind::Arrow(src, tgt) => Ok(TypeExpr::arrow(
+            elaborate_type(types, params, src)?,
+            elaborate_type(types, params, tgt)?,
+        )),
+        surface::TypeExprKind::Product(elts) => Ok(TypeExpr::Product(
+            elts.iter()
+                .map(|t| elaborate_type(types, params, t))
+                .collect::<Result<_, _>>()?,
+        )),
+        surface::TypeExprKind::Named(path, args) => {
+            let name = path.name.name;
+            let unknown = || ElaborationError::UnknownType {
+                name: path.to_string(),
+                span: tp.span.into(),
+            };
+            if !path.qualifiers.is_empty() {
+                return Err(unknown());
+            }
+            let param = params.iter().position(|p| p.name == name);
+            let (resolved, arity) = match (param, types.get(name)) {
+                (Some(i), _) => (TypeExpr::Var(i64::try_from(i).unwrap(), false), 0),
+                (None, Some(TypeName::Builtin(builtin))) => (builtin.clone(), 0),
+                (None, Some(&TypeName::Declared(id, arity))) => {
+                    let args = args
+                        .iter()
+                        .map(|t| elaborate_type(types, params, t))
+                        .collect::<Result<_, _>>()?;
+                    (TypeExpr::Named(id, args), arity)
+                }
+                (None, None) => return Err(unknown()),
+            };
+            if args.len() != arity {
+                return Err(ElaborationError::WrongTypeArity {
+                    name: path.to_string(),
+                    expected: arity,
+                    actual: args.len(),
+                    span: tp.span.into(),
+                });
+            }
+            Ok(resolved)
+        }
+    }
 }
 
 fn surface_to_core_inner<'a>(
@@ -43,7 +199,7 @@ fn surface_to_core_inner<'a>(
             Some(index) => ast::ExprKind::BoundVariable(i64::try_from(index).unwrap()),
             None => ast::ExprKind::FreeVariable(x.to_string()),
         },
-        surface::ExprKind::Path(_) => todo!(),
+        surface::ExprKind::Path(p) => ast::ExprKind::FreeVariable(format!("TODO {p}")),
         surface::ExprKind::Application(f, x) => ast::ExprKind::Application(
             Box::new(surface_to_core_inner(scope, *f)?),
             Box::new(surface_to_core_inner(scope, *x)?),
@@ -280,8 +436,89 @@ mod tests {
     use super::*;
     use crate::parser::Parser;
 
+    fn elab_decls(source: &str) -> Result<Vec<ast::TypeDecl>, ElaborationError> {
+        elaborate_type_decls(&Parser::parse(source).unwrap().1)
+    }
+
+    #[test]
+    fn elaborates_type_declarations() {
+        let decls = elab_decls(
+            "type List a = Nil | Cons a (List a);
+             type Pair a b = Pair (a, b) (List a -> b) Int;",
+        )
+        .unwrap();
+        let list = |arg| TypeExpr::Named(TypeId(0), vec![arg].into());
+        let var = |i| TypeExpr::Var(i, false);
+        assert_eq!(
+            decls[0],
+            ast::TypeDecl {
+                name: "List".into(),
+                arity: 1,
+                constructors: vec![
+                    ("Nil".into(), vec![]),
+                    ("Cons".into(), vec![var(0), list(var(0))]),
+                ],
+            }
+        );
+        assert_eq!(
+            decls[1].constructors[0].1,
+            vec![
+                TypeExpr::Product(vec![var(0), var(1)].into()),
+                TypeExpr::arrow(list(var(0)), var(1)),
+                TypeExpr::Int,
+            ]
+        );
+
+        // later declarations are visible to earlier ones
+        let decls = elab_decls("type A = A B; type B = B;").unwrap();
+        assert_eq!(
+            decls[0].constructors[0].1,
+            vec![TypeExpr::Named(TypeId(1), vec![].into())]
+        );
+    }
+
+    #[test]
+    fn detects_bad_type_declarations() {
+        for source in [
+            "type T = A; type T = B;",
+            "type Int = I;",
+            "type T a a = T;",
+            "type T = A | A;",
+        ] {
+            assert!(
+                matches!(
+                    elab_decls(source),
+                    Err(ElaborationError::DuplicateDeclaration { .. })
+                ),
+                "{source}"
+            );
+        }
+        for source in ["type T = T a;", "type T = T Foo;", "type T = T Other::T;"] {
+            assert!(
+                matches!(
+                    elab_decls(source),
+                    Err(ElaborationError::UnknownType { .. })
+                ),
+                "{source}"
+            );
+        }
+        for source in [
+            "type T a = T T;",
+            "type T = T (Int Int);",
+            "type T a = T (a Int);",
+        ] {
+            assert!(
+                matches!(
+                    elab_decls(source),
+                    Err(ElaborationError::WrongTypeArity { .. })
+                ),
+                "{source}"
+            );
+        }
+    }
+
     fn elab(source: &str) -> ast::Expr {
-        surface_to_core(Parser::parse(source).unwrap().0).unwrap()
+        elaborate(Parser::parse(source).unwrap().0, &[]).unwrap().0
     }
 
     #[test]
@@ -325,15 +562,21 @@ mod tests {
     #[test]
     fn detects_bad_patterns() {
         assert!(matches!(
-            surface_to_core(Parser::parse("let rec (x, y) = (1, 2); x + y").unwrap().0),
+            elaborate(
+                Parser::parse("let rec (x, y) = (1, 2); x + y").unwrap().0,
+                &[]
+            ),
             Err(ElaborationError::DestructuredLetRec { .. })
         ));
         assert!(matches!(
-            surface_to_core(Parser::parse("let (x, y, x) = (1, 2, 3); x").unwrap().0),
+            elaborate(
+                Parser::parse("let (x, y, x) = (1, 2, 3); x").unwrap().0,
+                &[]
+            ),
             Err(ElaborationError::MultipleBindings { .. })
         ));
         assert!(matches!(
-            surface_to_core(Parser::parse("let 1 = f x; ()").unwrap().0),
+            elaborate(Parser::parse("let 1 = f x; ()").unwrap().0, &[]),
             Err(ElaborationError::PatternContainsLiterals { .. })
         ));
     }
