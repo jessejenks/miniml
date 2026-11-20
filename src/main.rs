@@ -205,6 +205,7 @@ fn result_kind(tp: &typecheck::TypeExpr) -> ResultKind {
         typecheck::TypeExpr::Char => ResultKind::Char,
         typecheck::TypeExpr::Int => ResultKind::Int,
         typecheck::TypeExpr::String => ResultKind::String,
+        typecheck::TypeExpr::Named(_, _) => todo!(),
         typecheck::TypeExpr::Product(elts) => {
             let kinds: Vec<ResultKind> = elts.iter().map(result_kind).collect();
             if kinds.contains(&ResultKind::Never) {

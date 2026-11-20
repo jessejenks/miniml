@@ -5,6 +5,9 @@ use thiserror::Error;
 
 use crate::ast;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TypeId(pub i64);
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeExpr {
     Unit,
@@ -15,6 +18,7 @@ pub enum TypeExpr {
     Var(i64, bool), // is this an eq variable
     UnifVar(u32),
     Arrow(Rc<TypeExpr>, Rc<TypeExpr>),
+    Named(TypeId, Rc<[TypeExpr]>),
     Product(Rc<[TypeExpr]>),
 }
 
@@ -53,7 +57,7 @@ impl TypeExpr {
                 Self::max_type_variable_level(src),
                 Self::max_type_variable_level(tgt),
             ),
-            TypeExpr::Product(elts) => elts
+            TypeExpr::Named(_, elts) | TypeExpr::Product(elts) => elts
                 .iter()
                 .fold(-1, |acc, e| cmp::max(acc, Self::max_type_variable_level(e))),
         }
@@ -90,17 +94,20 @@ impl Display for TypeExpr {
                     write!(f, "{src} -> {tgt}")
                 }
             }
+            TypeExpr::Named(id, args) => {
+                write!(f, "T_{}", id.0)?;
+                for t in args.iter() {
+                    write!(f, " {t}")?;
+                }
+                Ok(())
+            }
             TypeExpr::Product(elts) => {
                 write!(f, "(")?;
                 for (i, e) in elts.iter().enumerate() {
                     if i > 0 {
-                        write!(f, " × ")?;
+                        write!(f, ", ")?;
                     }
-                    if matches!(e, TypeExpr::Arrow(_, _)) {
-                        write!(f, "({e})")?;
-                    } else {
-                        write!(f, "{e}")?;
-                    }
+                    write!(f, "{e}")?;
                 }
                 write!(f, ")")
             }
@@ -578,6 +585,14 @@ impl TypeChecker {
                 self.unify(span, (*ss).clone(), (*ts).clone())?;
                 self.unify(span, (*st).clone(), (*tt).clone())
             }
+            (TypeExpr::Named(l_id, ls), TypeExpr::Named(r_id, rs))
+                if l_id == r_id && ls.len() == rs.len() =>
+            {
+                for (l, r) in ls.iter().zip(rs.iter()) {
+                    self.unify(span, (*l).clone(), (*r).clone())?;
+                }
+                Ok(())
+            }
             (TypeExpr::Product(ls), TypeExpr::Product(rs)) if ls.len() == rs.len() => {
                 for (l, r) in ls.iter().zip(rs.iter()) {
                     self.unify(span, (*l).clone(), (*r).clone())?;
@@ -677,6 +692,12 @@ impl TypeChecker {
                 Rc::new(self.instantiate_inner(src, fresh)),
                 Rc::new(self.instantiate_inner(tgt, fresh)),
             ),
+            TypeExpr::Named(id, args) => TypeExpr::Named(
+                *id,
+                args.iter()
+                    .map(|e| self.instantiate_inner(e, fresh))
+                    .collect(),
+            ),
             TypeExpr::Product(elts) => TypeExpr::Product(
                 elts.iter()
                     .map(|e| self.instantiate_inner(e, fresh))
@@ -725,6 +746,12 @@ impl TypeChecker {
                 Rc::new(self.generalize_inner((*src).clone(), level, generalized)),
                 Rc::new(self.generalize_inner((*tgt).clone(), level, generalized)),
             ),
+            TypeExpr::Named(id, args) => TypeExpr::Named(
+                id,
+                args.iter()
+                    .map(|e| self.generalize_inner(e.clone(), level, generalized))
+                    .collect(),
+            ),
             TypeExpr::Product(elts) => TypeExpr::Product(
                 elts.iter()
                     .map(|e| self.generalize_inner(e.clone(), level, generalized))
@@ -745,7 +772,7 @@ impl TypeChecker {
                 self.lower_levels((*src).clone(), max_level);
                 self.lower_levels((*tgt).clone(), max_level);
             }
-            TypeExpr::Product(elts) => {
+            TypeExpr::Named(_, elts) | TypeExpr::Product(elts) => {
                 elts.iter()
                     .for_each(|e| self.lower_levels((*e).clone(), max_level));
             }
@@ -770,7 +797,9 @@ impl TypeChecker {
             TypeExpr::Arrow(src, tgt) => {
                 self.occurs(id, (*src).clone()) || self.occurs(id, (*tgt).clone())
             }
-            TypeExpr::Product(elts) => elts.iter().any(|e| self.occurs(id, (*e).clone())),
+            TypeExpr::Named(_, elts) | TypeExpr::Product(elts) => {
+                elts.iter().any(|e| self.occurs(id, (*e).clone()))
+            }
         }
     }
 }
@@ -852,15 +881,15 @@ mod tests {
             check("fun x => fun y => x == y").unwrap(),
             "(∀α.''α -> ''α -> Bool)"
         );
-        assert_eq!(check("(1, 2)").unwrap(), "(Int × Int)");
-        assert_eq!(check("((), ((), ()))").unwrap(), "(Unit × (Unit × Unit))");
+        assert_eq!(check("(1, 2)").unwrap(), "(Int, Int)");
+        assert_eq!(check("((), ((), ()))").unwrap(), "(Unit, (Unit, Unit))");
         assert_eq!(
             check("(fun x => x, fun y, z => (y, z))").unwrap(),
-            "(∀α.∀β.∀γ.((α -> α) × (β -> γ -> (β × γ))))"
+            "(∀α.∀β.∀γ.(α -> α, β -> γ -> (β, γ)))"
         );
         assert_eq!(
             check("let y = 1; let f = fun z => (y, z); f").unwrap(),
-            "(∀α.α -> (Int × α))"
+            "(∀α.α -> (Int, α))"
         );
         assert_eq!(check("(1, 2) == (3, 4)").unwrap(), "Bool");
         assert_eq!(
@@ -873,15 +902,15 @@ mod tests {
         );
         assert_eq!(
             check("let f = (fun x => let (y, z) = x; z); f").unwrap(),
-            "(∀α.∀β.(α × β) -> β)"
+            "(∀α.∀β.(α, β) -> β)"
         );
         assert_eq!(
             check("let f = fun x => x; (f 1, f \"a\")").unwrap(),
-            "(Int × String)"
+            "(Int, String)"
         );
         assert_eq!(
             check("let (f, n) = (fun x => x, 1); (f 1, f \"a\")").unwrap(),
-            "(Int × String)"
+            "(Int, String)"
         );
         assert_eq!(check("match 1 { 1 => true, _ => false }").unwrap(), "Bool");
         assert_eq!(
@@ -896,7 +925,7 @@ mod tests {
         assert_eq!(check("fun x => match x { y => y }").unwrap(), "(∀α.α -> α)");
         assert_eq!(
             check("match { (x, y) => (y, x) }").unwrap(),
-            "(∀α.∀β.(α × β) -> (β × α))"
+            "(∀α.∀β.(α, β) -> (β, α))"
         );
         // pattern variable shadows the outer x
         assert_eq!(
@@ -906,8 +935,9 @@ mod tests {
         // arm bindings are popped afterwards
         assert_eq!(
             check(r#"let x = 1; (match "a" { y => y }, x)"#).unwrap(),
-            "(String × Int)"
+            "(String, Int)"
         );
+        // named types
     }
 
     #[test]
