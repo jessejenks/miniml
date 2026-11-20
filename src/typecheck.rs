@@ -781,7 +781,7 @@ mod tests {
     use crate::{elaborate::surface_to_core, parser::Parser};
 
     fn check(source: &str) -> Result<String> {
-        let program = surface_to_core(Parser::parse(source).unwrap()).unwrap();
+        let program = surface_to_core(Parser::parse(source).unwrap().0).unwrap();
         TypeChecker::new()
             .infer(&program)
             .map(|scheme| scheme.to_string())

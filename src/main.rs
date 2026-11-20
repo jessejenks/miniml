@@ -87,7 +87,7 @@ fn main() -> miette::Result<()> {
         return Ok(());
     }
 
-    let program = Parser::parse(&source).map_err(|e| report(e, &args.path, &source))?;
+    let (program, _) = Parser::parse(&source).map_err(|e| report(e, &args.path, &source))?;
     if args.parse {
         println!("{program}");
         return Ok(());

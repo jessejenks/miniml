@@ -43,6 +43,7 @@ fn surface_to_core_inner<'a>(
             Some(index) => ast::ExprKind::BoundVariable(i64::try_from(index).unwrap()),
             None => ast::ExprKind::FreeVariable(x.to_string()),
         },
+        surface::ExprKind::Path(_) => todo!(),
         surface::ExprKind::Application(f, x) => ast::ExprKind::Application(
             Box::new(surface_to_core_inner(scope, *f)?),
             Box::new(surface_to_core_inner(scope, *x)?),
@@ -280,7 +281,7 @@ mod tests {
     use crate::parser::Parser;
 
     fn elab(source: &str) -> ast::Expr {
-        surface_to_core(Parser::parse(source).unwrap()).unwrap()
+        surface_to_core(Parser::parse(source).unwrap().0).unwrap()
     }
 
     #[test]
@@ -324,15 +325,15 @@ mod tests {
     #[test]
     fn detects_bad_patterns() {
         assert!(matches!(
-            surface_to_core(Parser::parse("let rec (x, y) = (1, 2); x + y").unwrap()),
+            surface_to_core(Parser::parse("let rec (x, y) = (1, 2); x + y").unwrap().0),
             Err(ElaborationError::DestructuredLetRec { .. })
         ));
         assert!(matches!(
-            surface_to_core(Parser::parse("let (x, y, x) = (1, 2, 3); x").unwrap()),
+            surface_to_core(Parser::parse("let (x, y, x) = (1, 2, 3); x").unwrap().0),
             Err(ElaborationError::MultipleBindings { .. })
         ));
         assert!(matches!(
-            surface_to_core(Parser::parse("let 1 = f x; ()").unwrap()),
+            surface_to_core(Parser::parse("let 1 = f x; ()").unwrap().0),
             Err(ElaborationError::PatternContainsLiterals { .. })
         ));
     }

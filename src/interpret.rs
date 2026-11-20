@@ -501,7 +501,7 @@ mod tests {
     use crate::parser::Parser;
 
     fn interp(source: &str) -> Expr {
-        interpret(&surface_to_core(Parser::parse(source).unwrap()).unwrap())
+        interpret(&surface_to_core(Parser::parse(source).unwrap().0).unwrap())
     }
 
     #[test]

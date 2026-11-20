@@ -592,7 +592,7 @@ mod tests {
     use crate::{elaborate::surface_to_core, parser::Parser};
 
     fn compile_match(source: &str) -> Tree {
-        let program = surface_to_core(Parser::parse(source).unwrap()).unwrap();
+        let program = surface_to_core(Parser::parse(source).unwrap().0).unwrap();
         let ast::ExprKind::Match(scrutinee, arms) = &program.kind else {
             panic!("expected a match: {source}");
         };
