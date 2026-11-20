@@ -142,6 +142,7 @@ pub enum Token<'a> {
     Plus,
     PlusPlus,
     Dash,
+    NarrowArrow,
     Star,
     Slash,
     Amp,
@@ -264,7 +265,14 @@ impl<'a> Iterator for Lexer<'a> {
                     Token::Plus
                 }
             }
-            '-' => Token::Dash,
+            '-' => {
+                if self.peek_char() == Some('>') {
+                    self.chars.next();
+                    Token::NarrowArrow
+                } else {
+                    Token::Dash
+                }
+            }
             '*' => Token::Star,
             '/' => Token::Slash,
             '&' => {

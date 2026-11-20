@@ -77,6 +77,10 @@ const PREFIX_RBP: u8 = 13;
 const APPLICATION_LBP: u8 = 15;
 const APPLICATION_RBP: u8 = 16;
 
+const TYPE_ARROW_LBP: u8 = 2;
+const TYPE_ARROW_RBP: u8 = 1;
+const TYPE_APPLICATION_LBP: u8 = 3;
+
 fn token_to_binary_op(tok: &Token) -> Option<BinaryOp> {
     match tok {
         Token::Plus => Some(BinaryOp::Add),
@@ -258,17 +262,91 @@ impl<'a> Parser<'a> {
 
     fn constructor(
         &mut self,
-    ) -> Result<(surface::Identifier<'a>, Vec<surface::Identifier<'a>>), ParseError> {
+    ) -> Result<(surface::Identifier<'a>, Vec<surface::TypeExpr<'a>>), ParseError> {
         let constructor = self.expect_identifier()?;
         let mut type_args = Vec::new();
-        while let Some((arg_start, Token::Identifier(t), arg_end)) = self.peek()? {
-            self.next()?;
-            type_args.push(surface::Identifier {
-                name: t,
-                span: (arg_start..arg_end).into(),
-            });
+        while let Some((_, tok, _)) = self.peek()?
+            && Self::starts_type_atom(&tok)
+        {
+            type_args.push(self.type_atom()?);
         }
         Ok((constructor, type_args))
+    }
+
+    fn type_expression(&mut self, min_bp: u8) -> Result<surface::TypeExpr<'a>, ParseError> {
+        let mut left = self.type_atom()?;
+        while let Some((_, tok, _)) = self.peek()? {
+            if Self::starts_type_atom(&tok) {
+                if TYPE_APPLICATION_LBP <= min_bp {
+                    break;
+                }
+                let surface::TypeExprKind::Named(_, args) = &mut left.kind else {
+                    break;
+                };
+                let arg = self.type_atom()?;
+                left.span = (left.span.start..arg.span.end).into();
+                args.push(arg);
+                continue;
+            }
+            if tok == Token::NarrowArrow {
+                if TYPE_ARROW_LBP <= min_bp {
+                    break;
+                }
+                self.next()?;
+                let right = self.type_expression(TYPE_ARROW_RBP)?;
+                let span = (left.span.start..right.span.end).into();
+                left = surface::TypeExpr {
+                    kind: surface::TypeExprKind::Arrow(Box::new(left), Box::new(right)),
+                    span,
+                };
+                continue;
+            }
+            break;
+        }
+        Ok(left)
+    }
+
+    fn starts_type_atom(tok: &Token<'a>) -> bool {
+        matches!(tok, Token::LParen | Token::Identifier(_))
+    }
+
+    fn type_atom(&mut self) -> Result<surface::TypeExpr<'a>, ParseError> {
+        match self.peek()? {
+            Some((start, Token::LParen, _)) => {
+                self.next()?;
+                let t = self.type_expression(0)?;
+                if self.chomp_if_next_is(Token::Comma)? {
+                    let mut elts = vec![t, self.type_expression(0)?];
+                    while self.chomp_if_next_is(Token::Comma)? {
+                        elts.push(self.type_expression(0)?);
+                    }
+                    let (_, _, paren_end) = self.expect(Token::RParen)?;
+                    return Ok(surface::TypeExpr {
+                        kind: surface::TypeExprKind::Product(elts),
+                        span: (start..paren_end).into(),
+                    });
+                }
+                let (_, _, paren_end) = self.expect(Token::RParen)?;
+                Ok(surface::TypeExpr {
+                    kind: t.kind,
+                    span: (start..paren_end).into(),
+                })
+            }
+            Some((start, Token::Identifier(name), end)) => {
+                self.next()?;
+                let (path, new_end) = self.qualified_name(name, start, end)?;
+                Ok(surface::TypeExpr {
+                    kind: surface::TypeExprKind::Named(path, Vec::new()),
+                    span: (start..new_end).into(),
+                })
+            }
+            Some((start, tok, end)) => Err(ParseError::UnexpectedTokenExpecting {
+                actual: format!("{tok:?}"),
+                expected: "type expression".to_string(),
+                span: (start..end).into(),
+            }),
+            None => Err(self.eof_error()),
+        }
     }
 
     fn expression(&mut self, min_bp: u8) -> Result<surface::Expr<'a>, ParseError> {
@@ -405,39 +483,22 @@ impl<'a> Parser<'a> {
                 start,
                 end,
             )),
-            Token::Identifier(name) => match self.peek()? {
-                Some((colon_start, Token::ColonColon, _)) if colon_start == end => {
-                    let mut qualifiers = vec![surface::Identifier {
-                        name,
-                        span: (start..end).into(),
-                    }];
-                    let mut new_end = end;
-                    while let Some((colon_start, Token::ColonColon, colon_end)) = self.peek()? {
-                        if colon_start != new_end {
-                            break;
-                        }
-                        self.next()?;
-                        let ident = self.expect_identifier()?;
-                        if ident.span.start != colon_end {
-                            return Err(ParseError::BadPath {
-                                span: (colon_start..ident.span.end).into(),
-                            });
-                        }
-                        new_end = ident.span.end;
-                        qualifiers.push(ident);
-                    }
+            Token::Identifier(name) => {
+                let (path, new_end) = self.qualified_name(name, start, end)?;
+                if path.qualifiers.is_empty() {
                     Ok(surface::Expr::new(
-                        surface::ExprKind::Path(qualifiers),
+                        surface::ExprKind::Variable(name),
+                        start,
+                        end,
+                    ))
+                } else {
+                    Ok(surface::Expr::new(
+                        surface::ExprKind::Path(path),
                         start,
                         new_end,
                     ))
                 }
-                _ => Ok(surface::Expr::new(
-                    surface::ExprKind::Variable(name),
-                    start,
-                    end,
-                )),
-            },
+            }
             Token::Keyword(Keyword::Fun) => self.abstraction(start),
             Token::Keyword(Keyword::Let) => self.let_in(start),
             Token::Keyword(Keyword::If) => self.if_else(start),
@@ -481,6 +542,41 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+    }
+
+    fn qualified_name(
+        &mut self,
+        name: &'a str,
+        start: usize,
+        end: usize,
+    ) -> Result<(surface::Path<'a>, usize), ParseError> {
+        let mut qualifiers = Vec::new();
+        let mut last = surface::Identifier {
+            name,
+            span: (start..end).into(),
+        };
+        let mut new_end = end;
+        while let Some((colon_start, Token::ColonColon, colon_end)) = self.peek()? {
+            if colon_start != new_end {
+                break;
+            }
+            self.next()?;
+            let ident = self.expect_identifier()?;
+            if ident.span.start != colon_end {
+                return Err(ParseError::BadPath {
+                    span: (colon_start..ident.span.end).into(),
+                });
+            }
+            new_end = ident.span.end;
+            qualifiers.push(std::mem::replace(&mut last, ident));
+        }
+        Ok((
+            surface::Path {
+                qualifiers,
+                name: last,
+            },
+            new_end,
+        ))
     }
 
     fn abstraction(&mut self, start: usize) -> Result<surface::Expr<'a>, ParseError> {
@@ -951,6 +1047,30 @@ mod tests {
             ds[0].to_string(),
             "type Expr\n  = Var Int\n  | Abs Expr\n  | App Expr Expr;"
         );
+
+        let decl = |source| parse_decls(source).1.remove(0).to_string();
+        assert_eq!(
+            decl("type List a = Nil | Cons a (List a);"),
+            "type List a\n  = Nil\n  | Cons a (List a);"
+        );
+        assert_eq!(
+            decl("type F a b = F (a -> b -> a) ((a -> b) -> a);"),
+            "type F a b\n  = F (a -> b -> a) ((a -> b) -> a);"
+        );
+        assert_eq!(
+            decl("type P = P (Int, List Int) (Other::T Int) ((Int));"),
+            "type P\n  = P (Int, List Int) (Other::T Int) Int;"
+        );
+        assert_eq!(
+            decl("type A = A (List a -> Map k (Option v));"),
+            "type A\n  = A (List a -> Map k (Option v));"
+        );
+
+        let err = parse_err("type B = B ((a -> b) c);");
+        let ParseError::UnexpectedTokenExpecting { expected, .. } = err else {
+            panic!("wrong error: {err:?}");
+        };
+        assert_eq!(expected, "RParen");
     }
 
     #[track_caller]

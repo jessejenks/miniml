@@ -110,10 +110,24 @@ pub struct Identifier<'a> {
     pub span: Span,
 }
 
+pub struct Path<'a> {
+    pub qualifiers: Vec<Identifier<'a>>,
+    pub name: Identifier<'a>,
+}
+
+impl Display for Path<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for q in &self.qualifiers {
+            write!(f, "{}::", q.name)?;
+        }
+        write!(f, "{}", self.name.name)
+    }
+}
+
 pub enum ExprKind<'a> {
     Literal(Literal<'a>),
     Variable(&'a str),
-    Path(Vec<Identifier<'a>>),
+    Path(Path<'a>),
     Application(Box<Expr<'a>>, Box<Expr<'a>>),
     Abstraction(Vec<Identifier<'a>>, Box<Expr<'a>>),
     LetIn(bool, Pattern<'a>, Box<Expr<'a>>, Box<Expr<'a>>),
@@ -130,15 +144,7 @@ impl Display for ExprKind<'_> {
         match self {
             ExprKind::Literal(lit) => lit.fmt(f),
             ExprKind::Variable(x) => write!(f, "{x}"),
-            ExprKind::Path(names) => {
-                for (i, name) in names.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, "::")?;
-                    }
-                    write!(f, "{}", name.name)?;
-                }
-                Ok(())
-            }
+            ExprKind::Path(path) => path.fmt(f),
             ExprKind::Application(left, right) => write!(f, "({left} {right})"),
             ExprKind::Abstraction(xs, body) => {
                 if xs.is_empty() {
@@ -214,10 +220,78 @@ impl Display for Expr<'_> {
     }
 }
 
+pub enum TypeExprKind<'a> {
+    Arrow(Box<TypeExpr<'a>>, Box<TypeExpr<'a>>),
+    Named(Path<'a>, Vec<TypeExpr<'a>>),
+    Product(Vec<TypeExpr<'a>>),
+}
+
+impl Display for TypeExprKind<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Arrow(src, tgt) => {
+                if matches!(
+                    src.as_ref(),
+                    TypeExpr {
+                        kind: Self::Arrow(_, _),
+                        ..
+                    }
+                ) {
+                    write!(f, "({src}) -> {tgt}")
+                } else {
+                    write!(f, "{src} -> {tgt}")
+                }
+            }
+            Self::Named(path, args) => {
+                write!(f, "{path}")?;
+                for t in args {
+                    if t.needs_parens() {
+                        write!(f, " ({t})")?;
+                    } else {
+                        write!(f, " {t}")?;
+                    }
+                }
+                Ok(())
+            }
+            Self::Product(elts) => {
+                write!(f, "(")?;
+                for (i, e) in elts.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{e}")?;
+                }
+                write!(f, ")")
+            }
+        }
+    }
+}
+
+pub struct TypeExpr<'a> {
+    pub kind: TypeExprKind<'a>,
+    pub span: Span,
+}
+
+impl TypeExpr<'_> {
+    fn needs_parens(&self) -> bool {
+        match &self.kind {
+            TypeExprKind::Arrow(..) => true,
+            TypeExprKind::Named(_, args) => !args.is_empty(),
+            TypeExprKind::Product(_) => false,
+        }
+    }
+}
+
+impl Display for TypeExpr<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.kind.fmt(f)
+    }
+}
+
 pub struct TypeDecl<'a> {
     pub name: Identifier<'a>,
     pub type_parameters: Vec<Identifier<'a>>,
-    pub constructors: Vec<(Identifier<'a>, Vec<Identifier<'a>>)>,
+    pub constructors: Vec<(Identifier<'a>, Vec<TypeExpr<'a>>)>,
 }
 
 impl Display for TypeDecl<'_> {
@@ -237,7 +311,11 @@ impl Display for TypeDecl<'_> {
                 continue;
             }
             for type_arg in type_args {
-                write!(f, " {}", type_arg.name)?;
+                if type_arg.needs_parens() {
+                    write!(f, " ({type_arg})")?;
+                } else {
+                    write!(f, " {type_arg}")?;
+                }
             }
         }
         write!(f, ";")
