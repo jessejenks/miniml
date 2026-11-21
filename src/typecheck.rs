@@ -97,7 +97,17 @@ impl Display for TypeExpr {
             TypeExpr::Named(id, args) => {
                 write!(f, "T_{}", id.0)?;
                 for t in args.iter() {
-                    write!(f, " {t}")?;
+                    match t {
+                        TypeExpr::Arrow(_, _) => {
+                            write!(f, " ({t})")?;
+                        }
+                        TypeExpr::Named(_, inner_args) if !inner_args.is_empty() => {
+                            write!(f, " ({t})")?;
+                        }
+                        _ => {
+                            write!(f, " {t}")?;
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -206,6 +216,7 @@ type Result<T> = std::result::Result<T, TypeError>;
 
 pub struct TypeChecker {
     env: HashMap<String, Scheme>,
+    constructors: Vec<Vec<Scheme>>,
     context: Vec<Scheme>,
     substitution: Vec<Option<TypeExpr>>,
     bindings: Vec<(ast::Span, Scheme)>,
@@ -218,6 +229,7 @@ impl TypeChecker {
     pub fn new() -> Self {
         Self {
             env: HashMap::new(),
+            constructors: Vec::new(),
             context: Vec::new(),
             substitution: Vec::new(),
             bindings: Vec::new(),
@@ -236,6 +248,25 @@ impl TypeChecker {
 
     pub fn set_env(&mut self, name: String, tp: Scheme) {
         self.env.insert(name, tp);
+    }
+
+    pub fn add_types(&mut self, decls: &[ast::TypeDecl]) {
+        for (id, decl) in decls.iter().enumerate() {
+            let arity = u32::try_from(decl.arity).unwrap();
+            let params = (0..i64::from(arity)).map(|i| TypeExpr::Var(i, false));
+            let result = TypeExpr::Named(TypeId(i64::try_from(id).unwrap()), params.collect());
+            let schemes = decl
+                .constructors
+                .iter()
+                .map(|(_, fields)| Scheme {
+                    arity,
+                    tp: fields.iter().rev().fold(result.clone(), |acc, field| {
+                        TypeExpr::arrow(field.clone(), acc)
+                    }),
+                })
+                .collect();
+            self.constructors.push(schemes);
+        }
     }
 
     pub fn bindings(&self) -> &[(ast::Span, Scheme)] {
@@ -259,7 +290,11 @@ impl TypeChecker {
             ast::ExprKind::Unary(op, e) => self.rule_unary(expr.span, *op, e),
             ast::ExprKind::Binary(op, left, right) => self.rule_binary(expr.span, *op, left, right),
             ast::ExprKind::Tuple(elements) => self.rule_tuple(elements),
-            ast::ExprKind::Constructor(_, _) => todo!(),
+            ast::ExprKind::Constructor(id, index) => {
+                let id = usize::try_from(id.0).unwrap();
+                let scheme = self.constructors[id][*index].clone();
+                Ok(self.instantiate(&scheme))
+            }
             ast::ExprKind::Match(scrutinee, arms) => self.rule_match(scrutinee, arms),
         }
     }
@@ -811,10 +846,10 @@ mod tests {
     use crate::test_util::front_end;
 
     fn check(source: &str) -> Result<String> {
-        let (program, _) = front_end(source);
-        TypeChecker::new()
-            .infer(&program)
-            .map(|scheme| scheme.to_string())
+        let (program, decls) = front_end(source);
+        let mut checker = TypeChecker::new();
+        checker.add_types(&decls);
+        checker.infer(&program).map(|scheme| scheme.to_string())
     }
 
     fn arrow(left: TypeExpr, right: TypeExpr) -> TypeExpr {
@@ -938,7 +973,58 @@ mod tests {
             check(r#"let x = 1; (match "a" { y => y }, x)"#).unwrap(),
             "(String, Int)"
         );
-        // named types
+    }
+
+    #[test]
+    fn infers_constructors() {
+        let check = |source| {
+            check(&format!(
+                "type Option a = None | Some a;
+                 type List a = Nil | Cons a (List a);
+                 type Pair = Pair Int Int;
+                 {source}"
+            ))
+        };
+        assert_eq!(check("Option::None").unwrap(), "(∀α.T_0 α)");
+        assert_eq!(check("Option::Some").unwrap(), "(∀α.α -> T_0 α)");
+        assert_eq!(check("Option::Some 1").unwrap(), "T_0 Int");
+        assert_eq!(check("Pair::Pair 1").unwrap(), "Int -> T_2");
+        assert_eq!(
+            check("List::Cons 1 (List::Cons 2 List::Nil)").unwrap(),
+            "T_1 Int"
+        );
+        assert_eq!(
+            check("let none = Option::None; (Option::Some 1, none, Option::Some true, none)")
+                .unwrap(),
+            "(∀α.∀β.(T_0 Int, T_0 α, T_0 Bool, T_0 β))"
+        );
+        assert_eq!(
+            check("Option::Some (Option::Some 1)").unwrap(),
+            "T_0 (T_0 Int)"
+        );
+        assert_eq!(
+            check("Option::Some (fun x => x)").unwrap(),
+            "(∀α.T_0 (α -> α))"
+        );
+
+        for source in [
+            "Pair::Pair true",
+            "Option::Some 1 + 1",
+            "List::Cons 1 (List::Cons true List::Nil)",
+            "List::Cons 1 Option::None",
+            "let f = fun x => x; (f List::Nil, f Option::None) ; List::Cons 1 Option::None",
+        ] {
+            assert!(
+                matches!(check(source), Err(TypeError::Unification { .. })),
+                "{source}"
+            );
+        }
+
+        // todo eq on named types
+        assert!(matches!(
+            check("Option::None == Option::None"),
+            Err(TypeError::Equality { .. })
+        ));
     }
 
     #[test]

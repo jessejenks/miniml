@@ -113,6 +113,7 @@ fn main() -> miette::Result<()> {
 
     let mut type_checker = TypeChecker::new();
     add_builtins(&mut type_checker);
+    type_checker.add_types(&elaborated_decls);
     let sch = type_checker
         .infer(&elaborated_program)
         .map_err(|e| report(e, &args.path, &source))?;
