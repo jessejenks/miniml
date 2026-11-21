@@ -574,6 +574,7 @@ impl<'a> Parser<'a> {
             surface::Path {
                 qualifiers,
                 name: last,
+                span: (start..new_end).into(),
             },
             new_end,
         ))

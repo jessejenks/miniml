@@ -161,6 +161,7 @@ pub enum ExprKind {
     Unary(UnaryOp, Box<Expr>),
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Tuple(Vec<Expr>),
+    Constructor(typecheck::TypeId, usize),
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
 }
 
@@ -192,6 +193,7 @@ impl Display for ExprKind {
                 }
                 write!(f, ")")
             }
+            ExprKind::Constructor(id, index) => write!(f, "T_{}::[{index}]", id.0),
             ExprKind::Match(scrutinee, arms) => {
                 write!(f, "(match {scrutinee}")?;
                 write!(f, " {{ ")?;

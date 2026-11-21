@@ -44,6 +44,13 @@ pub enum ElaborationError {
         #[label("this type is not defined")]
         span: SourceSpan,
     },
+    #[error("unknown constructor {name}")]
+    #[diagnostic(code(elaborator::unknown_constructor))]
+    UnknownConstructor {
+        name: String,
+        #[label("this constructor is not defined")]
+        span: SourceSpan,
+    },
     #[error("{name} expects {expected} type arguments, but got {actual}")]
     #[diagnostic(code(elaborator::wrong_type_arity))]
     WrongTypeArity {
@@ -59,9 +66,9 @@ pub fn elaborate(
     program: surface::Expr,
     decls: &[surface::TypeDecl],
 ) -> Result<(ast::Expr, Vec<ast::TypeDecl>), ElaborationError> {
-    let elaborated_decls = elaborate_type_decls(decls)?;
+    let (elaborated_decls, constructors) = elaborate_type_decls(decls)?;
     Ok((
-        surface_to_core_inner(&mut Vec::new(), program)?,
+        surface_to_core_inner(&mut Vec::new(), program, &constructors)?,
         elaborated_decls,
     ))
 }
@@ -79,27 +86,36 @@ enum TypeName {
     Declared(TypeId, usize),
 }
 
-pub fn elaborate_type_decls(
-    decls: &[surface::TypeDecl],
-) -> Result<Vec<ast::TypeDecl>, ElaborationError> {
+type Constructors<'a> = HashMap<&'a str, (TypeId, HashMap<&'a str, usize>)>;
+
+pub fn elaborate_type_decls<'a>(
+    decls: &'a [surface::TypeDecl],
+) -> Result<(Vec<ast::TypeDecl>, Constructors<'a>), ElaborationError> {
     let mut types: HashMap<&str, TypeName> = BUILTIN_TYPES
         .into_iter()
         .map(|(name, tp)| (name, TypeName::Builtin(tp)))
         .collect();
+    let mut constructors: Constructors = HashMap::new();
 
     for (i, decl) in decls.iter().enumerate() {
+        check_unique(&decl.type_parameters)?;
         let id = TypeId(i64::try_from(i).unwrap());
         let entry = TypeName::Declared(id, decl.type_parameters.len());
         if types.insert(decl.name.name, entry).is_some() {
             return Err(duplicate_decl_error(&decl.name));
         }
+        let mut ctors = HashMap::new();
+        for (i, (c, _)) in decl.constructors.iter().enumerate() {
+            if ctors.insert(c.name, i).is_some() {
+                return Err(duplicate_decl_error(&decl.name));
+            }
+        }
+        constructors.insert(decl.name.name, (id, ctors));
     }
 
-    decls
+    let elaborated_decls = decls
         .iter()
         .map(|decl| {
-            check_unique(&decl.type_parameters)?;
-            check_unique(decl.constructors.iter().map(|(c, _)| c))?;
             let constructors = decl
                 .constructors
                 .iter()
@@ -117,7 +133,9 @@ pub fn elaborate_type_decls(
                 constructors,
             })
         })
-        .collect()
+        .collect::<Result<_, _>>()?;
+
+    Ok((elaborated_decls, constructors))
 }
 
 fn check_unique<'a>(
@@ -136,6 +154,20 @@ fn duplicate_decl_error(ident: &surface::Identifier) -> ElaborationError {
     ElaborationError::DuplicateDeclaration {
         name: ident.name.to_string(),
         span: ident.span.into(),
+    }
+}
+
+fn unknown_type_error(path: &surface::Path) -> ElaborationError {
+    ElaborationError::UnknownType {
+        name: path.to_string(),
+        span: path.span.into(),
+    }
+}
+
+fn unknown_constructor_error(path: &surface::Path) -> ElaborationError {
+    ElaborationError::UnknownConstructor {
+        name: path.to_string(),
+        span: path.span.into(),
     }
 }
 
@@ -192,6 +224,7 @@ fn elaborate_type(
 fn surface_to_core_inner<'a>(
     scope: &mut Vec<&'a str>,
     expr: surface::Expr<'a>,
+    constructors: &Constructors<'a>,
 ) -> Result<ast::Expr, ElaborationError> {
     let kind = match expr.kind {
         surface::ExprKind::Literal(lit) => ast::ExprKind::Literal(surface_to_core_literal(&lit)),
@@ -199,10 +232,21 @@ fn surface_to_core_inner<'a>(
             Some(index) => ast::ExprKind::BoundVariable(i64::try_from(index).unwrap()),
             None => ast::ExprKind::FreeVariable(x.to_string()),
         },
-        surface::ExprKind::Path(p) => ast::ExprKind::FreeVariable(format!("TODO {p}")),
+        surface::ExprKind::Path(p) => {
+            let [type_name] = p.qualifiers.as_slice() else {
+                return Err(unknown_type_error(&p));
+            };
+            let Some((id, ctors)) = constructors.get(type_name.name) else {
+                return Err(unknown_type_error(&p));
+            };
+            let Some(&index) = ctors.get(p.name.name) else {
+                return Err(unknown_constructor_error(&p));
+            };
+            ast::ExprKind::Constructor(*id, index)
+        }
         surface::ExprKind::Application(f, x) => ast::ExprKind::Application(
-            Box::new(surface_to_core_inner(scope, *f)?),
-            Box::new(surface_to_core_inner(scope, *x)?),
+            Box::new(surface_to_core_inner(scope, *f, constructors)?),
+            Box::new(surface_to_core_inner(scope, *x, constructors)?),
         ),
         surface::ExprKind::Abstraction(xs, body) => {
             let binders: Vec<(&str, Option<ast::Span>)> = if xs.is_empty() {
@@ -215,7 +259,7 @@ fn surface_to_core_inner<'a>(
             for (name, _) in &binders {
                 scope.push(name);
             }
-            let mut inner = surface_to_core_inner(scope, *body)?;
+            let mut inner = surface_to_core_inner(scope, *body, constructors)?;
             for (_, span) in binders[1..].iter().rev() {
                 scope.pop();
                 let start = span.map_or(inner.span.start, |s| s.start);
@@ -231,15 +275,15 @@ fn surface_to_core_inner<'a>(
         surface::ExprKind::LetIn(is_rec, x, expr, body) => {
             if is_rec {
                 let (_, pattern) = push_scope(true, true, 0, scope, &x)?;
-                let e = surface_to_core_inner(scope, *expr)?;
-                let b = surface_to_core_inner(scope, *body)?;
+                let e = surface_to_core_inner(scope, *expr, constructors)?;
+                let b = surface_to_core_inner(scope, *body, constructors)?;
                 scope.pop();
                 ast::ExprKind::LetIn(is_rec, pattern, Box::new(e), Box::new(b))
             } else {
-                let e = surface_to_core_inner(scope, *expr)?;
+                let e = surface_to_core_inner(scope, *expr, constructors)?;
                 let start = scope.len();
                 let (pop_count, pattern) = push_scope(false, true, start, scope, &x)?;
-                let b = surface_to_core_inner(scope, *body)?;
+                let b = surface_to_core_inner(scope, *body, constructors)?;
                 for _ in 0..pop_count {
                     scope.pop();
                 }
@@ -247,52 +291,53 @@ fn surface_to_core_inner<'a>(
             }
         }
         surface::ExprKind::IfElse(condition, consequence, alternative) => ast::ExprKind::IfElse(
-            Box::new(surface_to_core_inner(scope, *condition)?),
-            Box::new(surface_to_core_inner(scope, *consequence)?),
-            Box::new(surface_to_core_inner(scope, *alternative)?),
+            Box::new(surface_to_core_inner(scope, *condition, constructors)?),
+            Box::new(surface_to_core_inner(scope, *consequence, constructors)?),
+            Box::new(surface_to_core_inner(scope, *alternative, constructors)?),
         ),
-        surface::ExprKind::Unary(op, expr) => {
-            ast::ExprKind::Unary(op, Box::new(surface_to_core_inner(scope, *expr)?))
-        }
+        surface::ExprKind::Unary(op, expr) => ast::ExprKind::Unary(
+            op,
+            Box::new(surface_to_core_inner(scope, *expr, constructors)?),
+        ),
         surface::ExprKind::Binary(surface::BinaryOp::Neq, left, right) => ast::ExprKind::Unary(
             ast::UnaryOp::Not,
             Box::new(ast::Expr {
                 kind: ast::ExprKind::Binary(
                     ast::BinaryOp::Eq,
-                    Box::new(surface_to_core_inner(scope, *left)?),
-                    Box::new(surface_to_core_inner(scope, *right)?),
+                    Box::new(surface_to_core_inner(scope, *left, constructors)?),
+                    Box::new(surface_to_core_inner(scope, *right, constructors)?),
                 ),
                 span: expr.span,
             }),
         ),
         surface::ExprKind::Binary(surface::BinaryOp::ForwardPipe, left, right) => {
             ast::ExprKind::Application(
-                Box::new(surface_to_core_inner(scope, *right)?),
-                Box::new(surface_to_core_inner(scope, *left)?),
+                Box::new(surface_to_core_inner(scope, *right, constructors)?),
+                Box::new(surface_to_core_inner(scope, *left, constructors)?),
             )
         }
         surface::ExprKind::Binary(surface::BinaryOp::BackwardPipe, left, right) => {
             ast::ExprKind::Application(
-                Box::new(surface_to_core_inner(scope, *left)?),
-                Box::new(surface_to_core_inner(scope, *right)?),
+                Box::new(surface_to_core_inner(scope, *left, constructors)?),
+                Box::new(surface_to_core_inner(scope, *right, constructors)?),
             )
         }
         surface::ExprKind::Binary(op, left, right) => ast::ExprKind::Binary(
             surface_to_core_binop(op),
-            Box::new(surface_to_core_inner(scope, *left)?),
-            Box::new(surface_to_core_inner(scope, *right)?),
+            Box::new(surface_to_core_inner(scope, *left, constructors)?),
+            Box::new(surface_to_core_inner(scope, *right, constructors)?),
         ),
         surface::ExprKind::Tuple(elements) => ast::ExprKind::Tuple(
             elements
                 .into_iter()
-                .map(|e| surface_to_core_inner(scope, e))
+                .map(|e| surface_to_core_inner(scope, e, constructors))
                 .collect::<Result<_, _>>()?,
         ),
         surface::ExprKind::Sequence(left, right) => {
-            let left_elabed = surface_to_core_inner(scope, *left)?;
+            let left_elabed = surface_to_core_inner(scope, *left, constructors)?;
             scope.push("");
             let right_span = right.span;
-            let right_elabed = surface_to_core_inner(scope, *right)?;
+            let right_elabed = surface_to_core_inner(scope, *right, constructors)?;
             scope.pop();
             ast::ExprKind::Application(
                 Box::new(ast::Expr {
@@ -309,14 +354,14 @@ fn surface_to_core_inner<'a>(
             let mut elaborated_cases = Vec::new();
             for (p, e) in arms {
                 let (pop_count, pattern) = push_scope(false, false, scope.len(), scope, &p)?;
-                let expr = surface_to_core_inner(scope, e)?;
+                let expr = surface_to_core_inner(scope, e, constructors)?;
                 for _ in 0..pop_count {
                     scope.pop();
                 }
                 elaborated_cases.push((pattern, expr));
             }
             if let Some(scrutinee) = scrutinee {
-                let expr = surface_to_core_inner(scope, *scrutinee)?;
+                let expr = surface_to_core_inner(scope, *scrutinee, constructors)?;
                 ast::ExprKind::Match(Box::new(expr), elaborated_cases)
             } else {
                 scope.pop();
@@ -437,7 +482,7 @@ mod tests {
     use crate::parser::Parser;
 
     fn elab_decls(source: &str) -> Result<Vec<ast::TypeDecl>, ElaborationError> {
-        elaborate_type_decls(&Parser::parse(source).unwrap().1)
+        Ok(elaborate_type_decls(&Parser::parse(source).unwrap().1)?.0)
     }
 
     #[test]
@@ -557,6 +602,36 @@ mod tests {
             elab("let (a, _, b, _, c) = (1, 2, 3, 4, 5); a + b + c").to_string(),
             "(let (1, 2, 3, 4, 5) in (+ (+ #4 #2) #0))"
         );
+    }
+
+    fn elab_with_types(source: &str) -> Result<ast::Expr, ElaborationError> {
+        let types = "type Option a = None | Some a; type Pair = Pair Int Int;";
+        let source = format!("{types} {source}");
+        let (program, decls) = Parser::parse(&source).unwrap();
+        Ok(elaborate(program, &decls)?.0)
+    }
+
+    #[test]
+    fn elaborates_constructors() {
+        let elab = |source| elab_with_types(source).unwrap().to_string();
+        assert_eq!(elab("Option::None"), "T_0::[0]");
+        assert_eq!(elab("Option::Some 1"), "(T_0::[1] 1)");
+        assert_eq!(elab("Pair::Pair 1 2"), "((T_1::[0] 1) 2)");
+        assert_eq!(elab("fun x => Option::Some x"), "(λ.(T_0::[1] #0))");
+
+        for source in ["Foo::Bar", "Int::Zero", "Option::Option::None"] {
+            assert!(
+                matches!(
+                    elab_with_types(source),
+                    Err(ElaborationError::UnknownType { .. })
+                ),
+                "{source}"
+            );
+        }
+        assert!(matches!(
+            elab_with_types("Option::Nothing"),
+            Err(ElaborationError::UnknownConstructor { .. })
+        ));
     }
 
     #[test]

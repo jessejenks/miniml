@@ -113,6 +113,7 @@ pub struct Identifier<'a> {
 pub struct Path<'a> {
     pub qualifiers: Vec<Identifier<'a>>,
     pub name: Identifier<'a>,
+    pub span: Span,
 }
 
 impl Display for Path<'_> {

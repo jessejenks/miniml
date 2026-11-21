@@ -259,6 +259,7 @@ impl TypeChecker {
             ast::ExprKind::Unary(op, e) => self.rule_unary(expr.span, *op, e),
             ast::ExprKind::Binary(op, left, right) => self.rule_binary(expr.span, *op, left, right),
             ast::ExprKind::Tuple(elements) => self.rule_tuple(elements),
+            ast::ExprKind::Constructor(_, _) => todo!(),
             ast::ExprKind::Match(scrutinee, arms) => self.rule_match(scrutinee, arms),
         }
     }
