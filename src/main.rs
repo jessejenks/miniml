@@ -6,6 +6,8 @@ mod lexer;
 mod parser;
 mod patternmatch;
 mod surface;
+#[cfg(test)]
+mod test_util;
 mod typecheck;
 
 use crate::codegen::{Compiler, ResultKind};

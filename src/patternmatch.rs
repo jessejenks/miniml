@@ -590,10 +590,10 @@ fn collect_binder_spans(spans: &mut Vec<ast::Span>, pattern: &ast::Pattern) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{elaborate::elaborate, parser::Parser};
+    use crate::test_util::front_end;
 
     fn compile_match(source: &str) -> Tree {
-        let (program, _) = elaborate(Parser::parse(source).unwrap().0, &[]).unwrap();
+        let (program, _) = front_end(source);
         let ast::ExprKind::Match(scrutinee, arms) = &program.kind else {
             panic!("expected a match: {source}");
         };

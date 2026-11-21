@@ -808,10 +808,10 @@ impl TypeChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{elaborate::elaborate, parser::Parser};
+    use crate::test_util::front_end;
 
     fn check(source: &str) -> Result<String> {
-        let (program, _) = elaborate(Parser::parse(source).unwrap().0, &[]).unwrap();
+        let (program, _) = front_end(source);
         TypeChecker::new()
             .infer(&program)
             .map(|scheme| scheme.to_string())
