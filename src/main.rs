@@ -10,7 +10,7 @@ mod surface;
 mod test_util;
 mod typecheck;
 
-use crate::codegen::{Compiler, ResultKind};
+use crate::codegen::{Compiler, result_kind};
 use crate::elaborate::elaborate;
 use crate::interpret::interpret;
 use crate::lexer::Lexer;
@@ -149,7 +149,7 @@ fn main() -> miette::Result<()> {
         return Ok(());
     }
 
-    let (result_kind, result_label) = (result_kind(sch.tp()), format!("- : {sch} = "));
+    let (result_kind, result_label) = (result_kind(sch.tp(), &[]), format!("- : {sch} = "));
 
     if args.patterns {
         return Ok(());
@@ -162,7 +162,7 @@ fn main() -> miette::Result<()> {
     }
 
     let context = Context::create();
-    let mut compiler = Compiler::new(&context, &args.path, compiled_trees)
+    let mut compiler = Compiler::new(&context, &args.path, compiled_trees, elaborated_decls)
         .map_err(|e| report(e, &args.path, &source))?;
     if let Some(triple) = &args.target {
         compiler.set_target(triple.clone());
@@ -207,27 +207,6 @@ fn collect_spans(spans: &mut Vec<ast::Span>, pattern: &ast::Pattern) {
                 collect_spans(spans, p);
             }
         }
-    }
-}
-
-fn result_kind(tp: &typecheck::TypeExpr) -> ResultKind {
-    match tp {
-        typecheck::TypeExpr::Unit => ResultKind::Unit,
-        typecheck::TypeExpr::Bool => ResultKind::Bool,
-        typecheck::TypeExpr::Char => ResultKind::Char,
-        typecheck::TypeExpr::Int => ResultKind::Int,
-        typecheck::TypeExpr::String => ResultKind::String,
-        typecheck::TypeExpr::Named(_, _) => todo!(),
-        typecheck::TypeExpr::Product(elts) => {
-            let kinds: Vec<ResultKind> = elts.iter().map(result_kind).collect();
-            if kinds.contains(&ResultKind::Never) {
-                ResultKind::Never
-            } else {
-                ResultKind::Tuple(kinds)
-            }
-        }
-        typecheck::TypeExpr::Arrow(..) => ResultKind::Function,
-        typecheck::TypeExpr::Var(..) | typecheck::TypeExpr::UnifVar(_) => ResultKind::Never,
     }
 }
 
