@@ -51,6 +51,13 @@ pub enum ElaborationError {
         #[label("this constructor is not defined")]
         span: SourceSpan,
     },
+    #[error("too many constructors {name}")]
+    #[diagnostic(code(elaborator::too_many_constructors))]
+    TooManyConstructors {
+        name: String,
+        #[label("max 247 constructors allowed per type")]
+        span: SourceSpan,
+    },
     #[error("{name} expects {expected} type arguments, but got {actual}")]
     #[diagnostic(code(elaborator::wrong_type_arity))]
     WrongTypeArity {
@@ -103,6 +110,12 @@ pub fn elaborate_type_decls<'a>(
         let entry = TypeName::Declared(id, decl.type_parameters.len());
         if types.insert(decl.name.name, entry).is_some() {
             return Err(duplicate_decl_error(&decl.name));
+        }
+        if decl.constructors.len() > 247 {
+            return Err(ElaborationError::TooManyConstructors {
+                name: decl.name.name.to_string(),
+                span: decl.name.span.into(),
+            });
         }
         let mut ctors = HashMap::new();
         for (i, (c, fields)) in decl.constructors.iter().enumerate() {

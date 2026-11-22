@@ -203,6 +203,14 @@ fn compiles_expressions() {
     agrees("if charToStr 'a' == \"a\" then 1 else 2");
     agrees("if charToStr 'ç' == \"ç\" then 1 else 2");
     agrees("if intToStr 123 == \"123\" then 1 else 2");
+    // ADT construction (runs without crashing)
+    agrees(
+        "
+    type List a = Nil | Cons a (List a);
+    let l = List::Cons 1 (List::Cons 2 List::Nil);
+    3
+    ",
+    );
 }
 
 #[test]

@@ -67,8 +67,10 @@ impl<'ctx> Compiler<'ctx> {
 
                 self.merge("if", &[(then_value, then_end), (else_value, else_end)])
             }
-            ast::ExprKind::Tuple(elements) => self.compile_tuple(elements),
-            ast::ExprKind::Constructor(_, _, _) => todo!(),
+            ast::ExprKind::Tuple(elements) => self.compile_constructor(Tag::Tuple as u64, elements),
+            ast::ExprKind::Constructor(_, index, args) => {
+                self.compile_constructor(*index as u64, args)
+            }
             ast::ExprKind::Match(scrutinee, arms) => {
                 let arm_blocks = self.compile_match(expr.span, scrutinee, arms)?;
                 let mut results = Vec::new();
@@ -94,7 +96,8 @@ impl<'ctx> Compiler<'ctx> {
             | ast::ExprKind::Binary(..)
             | ast::ExprKind::BoundVariable(_)
             | ast::ExprKind::FreeVariable(_)
-            | ast::ExprKind::Tuple(_) => {
+            | ast::ExprKind::Tuple(_)
+            | ast::ExprKind::Constructor(_, _, _) => {
                 let value = self.compile_expression(expr)?;
                 self.ret(value)
             }
@@ -136,7 +139,6 @@ impl<'ctx> Compiler<'ctx> {
                 self.builder.position_at_end(else_block);
                 self.compile_expression_tail(alternative)
             }
-            ast::ExprKind::Constructor(_, _, _) => todo!(),
             ast::ExprKind::Match(scrutinee, arms) => {
                 let arm_blocks = self.compile_match(expr.span, scrutinee, arms)?;
                 for ((_, body), entry) in arms.iter().zip(arm_blocks) {
@@ -387,22 +389,26 @@ impl<'ctx> Compiler<'ctx> {
         Ok(self.builder.build_ptr_to_int(ptr, self.word, "str.word")?)
     }
 
-    fn compile_tuple(&mut self, elements: &[ast::Expr]) -> Result<IntValue<'ctx>> {
+    fn compile_constructor(&mut self, tag: u64, elements: &[ast::Expr]) -> Result<IntValue<'ctx>> {
+        if elements.is_empty() {
+            return Ok(self.word.const_int((tag << 1) | 1, false));
+        }
+
         let values = elements
             .iter()
             .map(|e| self.compile_expression(e))
             .collect::<Result<Vec<_>>>()?;
 
         let words = elements.len();
-        let tuple = self
+        let cons = self
             .builder
             .build_direct_call(
                 self.miniml_alloc,
                 &[
                     self.word.const_int(words as u64, false).into(),
-                    self.word.const_int(Tag::Tuple as u64, false).into(),
+                    self.word.const_int(tag, false).into(),
                 ],
-                "tuple",
+                "cons",
             )?
             .try_as_basic_value()
             .expect_basic("miniml_alloc returns a value")
@@ -412,9 +418,9 @@ impl<'ctx> Compiler<'ctx> {
             let field = unsafe {
                 self.builder.build_gep(
                     self.word,
-                    tuple,
+                    cons,
                     &[self.word.const_int(i as u64, false)],
-                    "tuple.field",
+                    "cons.field",
                 )?
             };
             self.builder.build_store(field, *value)?;
@@ -422,7 +428,7 @@ impl<'ctx> Compiler<'ctx> {
 
         Ok(self
             .builder
-            .build_ptr_to_int(tuple, self.word, "tuple.word")?)
+            .build_ptr_to_int(cons, self.word, "cons.word")?)
     }
 
     fn compile_short_circuit(
