@@ -12,7 +12,7 @@ use inkwell::{
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
 
-use crate::{ast, patternmatch};
+use crate::{ast, patternmatch, typecheck};
 
 mod expr;
 mod machine;
@@ -38,6 +38,9 @@ pub enum CodegenError {
     #[error("linking failed: {0}")]
     #[diagnostic(code(codegen::link), help("linking uses $CC, or `clang`"))]
     Link(String),
+    #[error("unknown type T_{id}")]
+    #[diagnostic(code(codegen::unknown_type))]
+    UnknownType { id: usize },
 }
 
 impl From<LLVMString> for CodegenError {
@@ -57,11 +60,41 @@ pub enum ResultKind {
     String,
     Function,
     Tuple(Vec<ResultKind>),
+    Named(typecheck::TypeId, Vec<ResultKind>),
     /// no return value expected
     Never,
     /// always return the unboxed result as the exit code
     #[cfg(test)]
     ExitCode,
+}
+
+pub fn result_kind(tp: &typecheck::TypeExpr, type_args: &[ResultKind]) -> ResultKind {
+    match tp {
+        typecheck::TypeExpr::Unit => ResultKind::Unit,
+        typecheck::TypeExpr::Bool => ResultKind::Bool,
+        typecheck::TypeExpr::Char => ResultKind::Char,
+        typecheck::TypeExpr::Int => ResultKind::Int,
+        typecheck::TypeExpr::String => ResultKind::String,
+        typecheck::TypeExpr::Named(id, args) => ResultKind::Named(
+            *id,
+            args.iter().map(|t| result_kind(t, type_args)).collect(),
+        ),
+        typecheck::TypeExpr::Product(elts) => {
+            let kinds: Vec<ResultKind> = elts.iter().map(|t| result_kind(t, type_args)).collect();
+            if kinds.contains(&ResultKind::Never) {
+                ResultKind::Never
+            } else {
+                ResultKind::Tuple(kinds)
+            }
+        }
+        typecheck::TypeExpr::Arrow(..) => ResultKind::Function,
+        typecheck::TypeExpr::Var(index, _) => usize::try_from(*index)
+            .ok()
+            .and_then(|i| type_args.get(i))
+            .cloned()
+            .unwrap_or(ResultKind::Never),
+        typecheck::TypeExpr::UnifVar(_) => ResultKind::Never,
+    }
 }
 
 const TAIL_CC: u32 = 18;
@@ -78,6 +111,7 @@ enum Tag {
 
 pub struct Compiler<'ctx> {
     trees: HashMap<ast::Span, patternmatch::Tree>,
+    types: Vec<ast::TypeDecl>,
     context: &'ctx Context,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
@@ -118,6 +152,7 @@ impl<'ctx> Compiler<'ctx> {
         context: &'ctx Context,
         name: &str,
         trees: HashMap<ast::Span, patternmatch::Tree>,
+        types: Vec<ast::TypeDecl>,
     ) -> Result<Self> {
         let module = context.create_module(name);
 
@@ -241,6 +276,7 @@ impl<'ctx> Compiler<'ctx> {
 
         let mut c = Self {
             trees,
+            types,
             context,
             module,
             builder,
@@ -385,12 +421,155 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 self.call_printf(")", &[])?;
             }
+            ResultKind::Named(id, kinds) => {
+                let print_fn = self.print_named_fn(*id, kinds)?;
+                self.builder
+                    .build_direct_call(print_fn, &[value.into()], "")?;
+            }
             ResultKind::Function => self.call_printf("<fun>", &[])?,
             ResultKind::Never => unreachable!("handled in compile"),
             #[cfg(test)]
             ResultKind::ExitCode => unreachable!("handled in compile"),
         }
         Ok(())
+    }
+
+    /// One print function per instantiated type
+    fn print_named_fn(
+        &self,
+        id: typecheck::TypeId,
+        kinds: &[ResultKind],
+    ) -> Result<FunctionValue<'ctx>> {
+        // e.g.
+        // type List a               -> TypeId = 0
+        //   = Nil                   -> index  = 0
+        //   | Cons a (List a)       -> index  = 1
+        // List::Nil                 -> stored as immediate (index << 1) | 1
+        // List::Cons <value> <list> -> store as object with header tag = index
+        let name = format!("print.T_{}.{kinds:?}", id.0);
+        // If we've already defined e.g. @"print.T_0.[Int]", skip
+        if let Some(f) = self.module.get_function(&name) {
+            return Ok(f);
+        }
+        let decl = self
+            .types
+            .get(id.0)
+            .ok_or(CodegenError::UnknownType { id: id.0 })?;
+        let f = self.module.add_function(
+            &name,
+            self.context.void_type().fn_type(&[self.word.into()], false),
+            Some(Linkage::Internal),
+        );
+        // save block position for caller
+        let previous = self.builder.get_insert_block();
+
+        let entry = self.context.append_basic_block(f, "entry");
+        let immediate = self.context.append_basic_block(f, "immediate");
+        let block = self.context.append_basic_block(f, "block");
+        let dispatch = self.context.append_basic_block(f, "dispatch");
+        let invalid = self.context.append_basic_block(f, "invalid");
+
+        // test for nullary constructors/immediates
+        self.builder.position_at_end(entry);
+        let value = f.get_first_param().unwrap().into_int_value();
+        let one = self.word.const_int(1, false);
+        let low_bit = self.builder.build_and(value, one, "low_bit")?;
+        let is_immediate = self.builder.build_int_compare(
+            IntPredicate::NE,
+            low_bit,
+            self.word.const_zero(),
+            "is_imm",
+        )?;
+        self.builder
+            .build_conditional_branch(is_immediate, immediate, block)?;
+
+        self.builder.position_at_end(immediate);
+        let imm_index = self
+            .builder
+            .build_right_shift(value, one, false, "imm.index")?;
+        self.builder.build_unconditional_branch(dispatch)?;
+
+        self.builder.position_at_end(block);
+        let ptr = self
+            .builder
+            .build_int_to_ptr(value, self.ptr_type, "cons")?;
+        let header = unsafe {
+            self.builder.build_gep(
+                self.word,
+                ptr,
+                &[self.word.const_int((-1i64).cast_unsigned(), true)], // p[-1] to get header
+                "header.ptr",
+            )?
+        };
+        let header = self
+            .builder
+            .build_load(self.word, header, "header")?
+            .into_int_value();
+        let tag = self
+            .builder
+            .build_and(header, self.word.const_int(255, false), "tag")?;
+        self.builder.build_unconditional_branch(dispatch)?;
+
+        // index = phi <immediate> <object>
+        self.builder.position_at_end(dispatch);
+        let index = self.builder.build_phi(self.word, "index")?;
+        index.add_incoming(&[(&imm_index, immediate), (&tag, block)]);
+
+        // match on index
+        let mut cases = Vec::new();
+        for (i, _) in decl.constructors.iter().enumerate() {
+            let case = self.context.append_basic_block(f, &format!("ctor.{i}"));
+            cases.push((self.word.const_int(i as u64, false), case));
+        }
+        self.builder
+            .build_switch(index.as_basic_value().into_int_value(), invalid, &cases)?;
+
+        for ((i, (_, fields)), (_, case)) in decl.constructors.iter().enumerate().zip(&cases) {
+            self.builder.position_at_end(*case);
+            let field_kinds: Vec<ResultKind> =
+                fields.iter().map(|tp| result_kind(tp, kinds)).collect();
+            // this can happen legitimately
+            // e.g. Option::None : ∀α.Option α which is treated as None -> <immediate>, and Some α -> Never
+            if field_kinds.contains(&ResultKind::Never) {
+                self.builder.build_unreachable()?;
+                continue;
+            }
+            self.call_printf(&format!("T_{}::[{i}]", id.0), &[])?;
+            if !field_kinds.is_empty() {
+                let ptr = self
+                    .builder
+                    .build_int_to_ptr(value, self.ptr_type, "fields")?;
+                self.call_printf("(", &[])?;
+                for (j, kind) in field_kinds.iter().enumerate() {
+                    if j > 0 {
+                        self.call_printf(", ", &[])?;
+                    }
+                    let field = unsafe {
+                        self.builder.build_gep(
+                            self.word,
+                            ptr,
+                            &[self.word.const_int(j as u64, false)],
+                            "field.ptr",
+                        )?
+                    };
+                    let field = self
+                        .builder
+                        .build_load(self.word, field, "field")?
+                        .into_int_value();
+                    self.print_value(kind, field)?;
+                }
+                self.call_printf(")", &[])?;
+            }
+            self.builder.build_return(None)?;
+        }
+
+        self.builder.position_at_end(invalid);
+        self.builder.build_unreachable()?;
+
+        if let Some(previous) = previous {
+            self.builder.position_at_end(previous);
+        }
+        Ok(f)
     }
 
     fn call_printf(&self, format: &str, args: &[BasicMetadataValueEnum<'ctx>]) -> Result<()> {

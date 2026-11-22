@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::ast;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TypeId(pub usize);
 
 #[derive(Debug, Clone, PartialEq)]

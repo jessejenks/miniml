@@ -25,10 +25,10 @@ static RUNTIME_LOCK: Mutex<()> = Mutex::new(());
 
 fn run(source: &str) -> i64 {
     // validate and run inkwell JIT
-    let (program, _) = front_end(source);
+    let (program, types) = front_end(source);
     let trees = patternmatch::check_patterns(&program, source, false).unwrap();
     let context = Context::create();
-    let mut compiler = Compiler::new(&context, "test", trees).unwrap();
+    let mut compiler = Compiler::new(&context, "test", trees, types).unwrap();
     compiler
         .compile(&program, &ResultKind::ExitCode, "")
         .unwrap();
@@ -217,7 +217,7 @@ fn compiles_expressions() {
 fn unknown_variable() {
     let (program, _) = front_end("1 + foo");
     let context = Context::create();
-    let mut compiler = Compiler::new(&context, "test", HashMap::new()).unwrap();
+    let mut compiler = Compiler::new(&context, "test", HashMap::new(), Vec::new()).unwrap();
     assert!(matches!(
         compiler.compile(&program, &ResultKind::ExitCode, ""),
         Err(CodegenError::UnknownVariable { name, .. }) if name == "foo"
