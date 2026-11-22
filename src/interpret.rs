@@ -1,4 +1,4 @@
-use crate::ast;
+use crate::{ast, typecheck};
 use std::fmt::Display;
 
 #[derive(PartialEq, Clone)]
@@ -42,6 +42,7 @@ pub enum Expr {
     Binary(ast::BinaryOp, Box<Expr>, Box<Expr>),
     Tuple(Vec<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
+    Constructor(typecheck::TypeId, usize, Vec<Expr>),
 }
 
 impl Display for Expr {
@@ -83,6 +84,20 @@ impl Display for Expr {
                 }
                 write!(f, " }})")
             }
+            Expr::Constructor(id, index, args) => {
+                write!(f, "T_{}::[{index}]", id.0)?;
+                if !args.is_empty() {
+                    write!(f, "(")?;
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{arg}")?;
+                    }
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -114,7 +129,9 @@ fn to_spanless(expr: &ast::Expr) -> Expr {
             Box::new(to_spanless(right)),
         ),
         ast::ExprKind::Tuple(elements) => Expr::Tuple(elements.iter().map(to_spanless).collect()),
-        ast::ExprKind::Constructor(_, _, _) => todo!(),
+        ast::ExprKind::Constructor(id, index, args) => {
+            Expr::Constructor(*id, *index, args.iter().map(to_spanless).collect())
+        }
         ast::ExprKind::Match(scrutinee, arms) => Expr::Match(
             Box::new(to_spanless(scrutinee)),
             arms.iter()
@@ -206,6 +223,11 @@ fn shift(i: i64, c: i64, expr: Expr) -> Expr {
                 })
                 .collect(),
         ),
+        Expr::Constructor(id, index, args) => Expr::Constructor(
+            id,
+            index,
+            args.into_iter().map(|e| shift(i, c, e)).collect(),
+        ),
     }
 }
 
@@ -267,6 +289,13 @@ fn substitute(t: Expr, n: i64, expr: Expr) -> Expr {
                 .collect();
             Expr::Match(Box::new(substitute(*scrutinee, n, expr)), new_arms)
         }
+        Expr::Constructor(id, index, args) => Expr::Constructor(
+            id,
+            index,
+            args.into_iter()
+                .map(|e| substitute(e, n, expr.clone()))
+                .collect(),
+        ),
     }
 }
 
@@ -278,10 +307,6 @@ fn beta(body: Expr, right: Expr) -> Expr {
 pub fn interpret(expr: &ast::Expr) -> Expr {
     let spanless = to_spanless(expr);
     cbv(spanless)
-}
-
-fn stuck_application(left: Expr, right: Expr) -> Expr {
-    Expr::Application(Box::new(left), Box::new(right))
 }
 
 fn cbv(expr: Expr) -> Expr {
@@ -481,6 +506,9 @@ fn cbv(expr: Expr) -> Expr {
             }
         }
         Expr::Tuple(elements) => Expr::Tuple(elements.into_iter().map(cbv).collect()),
+        Expr::Constructor(id, index, args) => {
+            Expr::Constructor(id, index, args.into_iter().map(cbv).collect())
+        }
         Expr::Match(scrutinee, arms) => {
             let v = cbv(*scrutinee);
             for (p, e) in &arms {
@@ -495,6 +523,10 @@ fn cbv(expr: Expr) -> Expr {
     }
 }
 
+fn stuck_application(left: Expr, right: Expr) -> Expr {
+    Expr::Application(Box::new(left), Box::new(right))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,6 +534,35 @@ mod tests {
 
     fn interp(source: &str) -> Expr {
         interpret(&front_end(source).0)
+    }
+
+    #[test]
+    fn interprets_constructors() {
+        let interp = |source| {
+            interp(&format!(
+                "type Option a = None | Some a;
+                 type List a = Nil | Cons a (List a);
+                 type Pair = Pair Int Int;
+                 {source}"
+            ))
+            .to_string()
+        };
+        assert_eq!(interp("Option::None"), "T_0::[0]");
+        assert_eq!(interp("Option::Some (1 + 2)"), "T_0::[1](3)");
+        assert_eq!(
+            interp("List::Cons 1 (List::Cons 2 List::Nil)"),
+            "T_1::[1](1, T_1::[1](2, T_1::[0]))"
+        );
+        // partial application
+        assert_eq!(interp("Pair::Pair 1"), "(λ.T_2::[0](1, #0))");
+        assert_eq!(
+            interp("let p = Pair::Pair 1; (p 2, p 3)"),
+            "(T_2::[0](1, 2), T_2::[0](1, 3))"
+        );
+        assert_eq!(
+            interp("let x = 5; let f = fun y => Option::Some (x, y); f 6"),
+            "T_0::[1]((5, 6))"
+        );
     }
 
     #[test]
