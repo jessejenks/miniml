@@ -114,7 +114,7 @@ fn to_spanless(expr: &ast::Expr) -> Expr {
             Box::new(to_spanless(right)),
         ),
         ast::ExprKind::Tuple(elements) => Expr::Tuple(elements.iter().map(to_spanless).collect()),
-        ast::ExprKind::Constructor(_, _) => todo!(),
+        ast::ExprKind::Constructor(_, _, _) => todo!(),
         ast::ExprKind::Match(scrutinee, arms) => Expr::Match(
             Box::new(to_spanless(scrutinee)),
             arms.iter()

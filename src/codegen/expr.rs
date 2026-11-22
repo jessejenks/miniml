@@ -68,7 +68,7 @@ impl<'ctx> Compiler<'ctx> {
                 self.merge("if", &[(then_value, then_end), (else_value, else_end)])
             }
             ast::ExprKind::Tuple(elements) => self.compile_tuple(elements),
-            ast::ExprKind::Constructor(_, _) => todo!(),
+            ast::ExprKind::Constructor(_, _, _) => todo!(),
             ast::ExprKind::Match(scrutinee, arms) => {
                 let arm_blocks = self.compile_match(expr.span, scrutinee, arms)?;
                 let mut results = Vec::new();
@@ -136,7 +136,7 @@ impl<'ctx> Compiler<'ctx> {
                 self.builder.position_at_end(else_block);
                 self.compile_expression_tail(alternative)
             }
-            ast::ExprKind::Constructor(_, _) => todo!(),
+            ast::ExprKind::Constructor(_, _, _) => todo!(),
             ast::ExprKind::Match(scrutinee, arms) => {
                 let arm_blocks = self.compile_match(expr.span, scrutinee, arms)?;
                 for ((_, body), entry) in arms.iter().zip(arm_blocks) {

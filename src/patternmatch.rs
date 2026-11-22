@@ -464,7 +464,7 @@ fn capture_trees(
         ast::ExprKind::Literal(_)
         | ast::ExprKind::BoundVariable(_)
         | ast::ExprKind::FreeVariable(_)
-        | ast::ExprKind::Constructor(_, _) => Ok(()), // TODO constructors
+        | ast::ExprKind::Constructor(_, _, _) => Ok(()), // TODO constructors
         ast::ExprKind::Application(left, right) | ast::ExprKind::Binary(_, left, right) => {
             capture_trees(left, source, debug, map)?;
             capture_trees(right, source, debug, map)

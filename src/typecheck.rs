@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::ast;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TypeId(pub i64);
+pub struct TypeId(pub usize);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeExpr {
@@ -210,6 +210,14 @@ pub enum TypeError {
         #[label("this arm does not have the expected type")]
         span: SourceSpan,
     },
+    #[error("unknown constructor")]
+    #[diagnostic(code(typecheck::unknown_constructor))]
+    UnknownConstructor {
+        id: usize,
+        index: usize,
+        #[label("could not find constructor")]
+        span: SourceSpan,
+    },
 }
 
 type Result<T> = std::result::Result<T, TypeError>;
@@ -254,7 +262,7 @@ impl TypeChecker {
         for (id, decl) in decls.iter().enumerate() {
             let arity = u32::try_from(decl.arity).unwrap();
             let params = (0..i64::from(arity)).map(|i| TypeExpr::Var(i, false));
-            let result = TypeExpr::Named(TypeId(i64::try_from(id).unwrap()), params.collect());
+            let result = TypeExpr::Named(TypeId(id), params.collect());
             let schemes = decl
                 .constructors
                 .iter()
@@ -290,10 +298,8 @@ impl TypeChecker {
             ast::ExprKind::Unary(op, e) => self.rule_unary(expr.span, *op, e),
             ast::ExprKind::Binary(op, left, right) => self.rule_binary(expr.span, *op, left, right),
             ast::ExprKind::Tuple(elements) => self.rule_tuple(elements),
-            ast::ExprKind::Constructor(id, index) => {
-                let id = usize::try_from(id.0).unwrap();
-                let scheme = self.constructors[id][*index].clone();
-                Ok(self.instantiate(&scheme))
+            ast::ExprKind::Constructor(id, index, args) => {
+                self.rule_constructor(expr.span, *id, *index, args)
             }
             ast::ExprKind::Match(scrutinee, arms) => self.rule_match(scrutinee, arms),
         }
@@ -528,6 +534,38 @@ impl TypeChecker {
                 })?;
         }
         Ok(result)
+    }
+
+    fn rule_constructor(
+        &mut self,
+        span: ast::Span,
+        id: TypeId,
+        index: usize,
+        args: &[ast::Expr],
+    ) -> Result<TypeExpr> {
+        let scheme = self
+            .constructors
+            .get(id.0)
+            .and_then(|ctors| ctors.get(index))
+            .cloned()
+            .ok_or(TypeError::UnknownConstructor {
+                id: id.0,
+                index,
+                span: span.into(),
+            })?;
+        let mut tp = self.instantiate(&scheme);
+        for arg in args {
+            // same as rule_app for each arg
+            let t2 = self.algorithm_j(arg)?;
+            let t_prime = self.new_unification_variable(false);
+            self.unify(
+                arg.span,
+                tp,
+                TypeExpr::Arrow(Rc::new(t2), Rc::new(t_prime.clone())),
+            )?;
+            tp = t_prime;
+        }
+        Ok(tp)
     }
 
     fn unify_pattern(
@@ -1127,5 +1165,66 @@ mod tests {
             TypeChecker::new().algorithm_j(&bound_variable(-1)),
             Err(TypeError::UnboundIndex { index: -1, .. })
         ));
+    }
+
+    #[test]
+    fn bad_constructors() {
+        let mut checker = TypeChecker::new();
+        checker.add_types(&[ast::TypeDecl {
+            name: "Either".to_string(),
+            arity: 2,
+            constructors: vec![
+                ("Left".to_string(), vec![TypeExpr::Var(0, false)]),
+                ("Right".to_string(), vec![TypeExpr::Var(1, false)]),
+            ],
+        }]);
+
+        assert!(matches!(
+            checker.algorithm_j(&ast::Expr {
+                kind: ast::ExprKind::Constructor(TypeId(1), 0, vec![]),
+                span: (0..0).into(),
+            }),
+            Err(TypeError::UnknownConstructor { .. })
+        ));
+        assert!(matches!(
+            checker.algorithm_j(&ast::Expr {
+                kind: ast::ExprKind::Constructor(TypeId(0), 2, vec![]),
+                span: (0..0).into(),
+            }),
+            Err(TypeError::UnknownConstructor { .. })
+        ));
+        // too many arguments
+        assert!(matches!(
+            checker.algorithm_j(&ast::Expr {
+                kind: ast::ExprKind::Constructor(
+                    TypeId(0),
+                    0,
+                    vec![
+                        ast::Expr {
+                            kind: ast::ExprKind::Literal(ast::Literal::Int(0)),
+                            span: (0..0).into()
+                        },
+                        ast::Expr {
+                            kind: ast::ExprKind::Literal(ast::Literal::Int(1)),
+                            span: (0..0).into()
+                        }
+                    ]
+                ),
+                span: (0..0).into(),
+            }),
+            Err(TypeError::Unification { .. })
+        ));
+        // too few arguments is not an error, but should not actually happen in practice
+        let tp = checker
+            .algorithm_j(&ast::Expr {
+                kind: ast::ExprKind::Constructor(TypeId(0), 0, vec![]),
+                span: (0..0).into(),
+            })
+            .unwrap();
+        let tp = checker.resolve(tp);
+        assert_eq!(
+            checker.generalize_at_level(tp, -1).to_string(),
+            "(∀α.∀β.α -> T_0 α β)"
+        );
     }
 }

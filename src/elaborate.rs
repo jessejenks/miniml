@@ -86,7 +86,7 @@ enum TypeName {
     Declared(TypeId, usize),
 }
 
-type Constructors<'a> = HashMap<&'a str, (TypeId, HashMap<&'a str, usize>)>;
+type Constructors<'a> = HashMap<&'a str, (TypeId, HashMap<&'a str, (usize, usize)>)>;
 
 pub fn elaborate_type_decls<'a>(
     decls: &'a [surface::TypeDecl],
@@ -99,15 +99,15 @@ pub fn elaborate_type_decls<'a>(
 
     for (i, decl) in decls.iter().enumerate() {
         check_unique(&decl.type_parameters)?;
-        let id = TypeId(i64::try_from(i).unwrap());
+        let id = TypeId(i);
         let entry = TypeName::Declared(id, decl.type_parameters.len());
         if types.insert(decl.name.name, entry).is_some() {
             return Err(duplicate_decl_error(&decl.name));
         }
         let mut ctors = HashMap::new();
-        for (i, (c, _)) in decl.constructors.iter().enumerate() {
-            if ctors.insert(c.name, i).is_some() {
-                return Err(duplicate_decl_error(&decl.name));
+        for (i, (c, fields)) in decl.constructors.iter().enumerate() {
+            if ctors.insert(c.name, (i, fields.len())).is_some() {
+                return Err(duplicate_decl_error(c));
             }
         }
         constructors.insert(decl.name.name, (id, ctors));
@@ -239,10 +239,28 @@ fn surface_to_core_inner<'a>(
             let Some((id, ctors)) = constructors.get(type_name.name) else {
                 return Err(unknown_type_error(&p));
             };
-            let Some(&index) = ctors.get(p.name.name) else {
+            let Some(&(index, field_count)) = ctors.get(p.name.name) else {
                 return Err(unknown_constructor_error(&p));
             };
-            ast::ExprKind::Constructor(*id, index)
+            // eta-expand
+            let args = (0..field_count)
+                .rev()
+                .map(|i| ast::Expr {
+                    kind: ast::ExprKind::BoundVariable(i64::try_from(i).unwrap()),
+                    span: expr.span,
+                })
+                .collect();
+            let mut kind = ast::ExprKind::Constructor(*id, index, args);
+            for _ in 0..field_count {
+                kind = ast::ExprKind::Abstraction(
+                    None,
+                    Box::new(ast::Expr {
+                        kind,
+                        span: expr.span,
+                    }),
+                );
+            }
+            kind
         }
         surface::ExprKind::Application(f, x) => ast::ExprKind::Application(
             Box::new(surface_to_core_inner(scope, *f, constructors)?),
@@ -615,9 +633,11 @@ mod tests {
     fn elaborates_constructors() {
         let elab = |source| elab_with_types(source).unwrap().to_string();
         assert_eq!(elab("Option::None"), "T_0::[0]");
-        assert_eq!(elab("Option::Some 1"), "(T_0::[1] 1)");
-        assert_eq!(elab("Pair::Pair 1 2"), "((T_1::[0] 1) 2)");
-        assert_eq!(elab("fun x => Option::Some x"), "(λ.(T_0::[1] #0))");
+        assert_eq!(elab("Option::Some"), "(λ.T_0::[1](#0))");
+        assert_eq!(elab("Option::Some 1"), "((λ.T_0::[1](#0)) 1)");
+        assert_eq!(elab("Pair::Pair"), "(λ.(λ.T_1::[0](#1, #0)))");
+        assert_eq!(elab("Pair::Pair 1 2"), "(((λ.(λ.T_1::[0](#1, #0))) 1) 2)");
+        assert_eq!(elab("fun x => Option::Some x"), "(λ.((λ.T_0::[1](#0)) #0))");
 
         for source in ["Foo::Bar", "Int::Zero", "Option::Option::None"] {
             assert!(
