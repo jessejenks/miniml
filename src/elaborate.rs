@@ -283,9 +283,7 @@ fn surface_to_core_inner<'a>(
             let binders: Vec<(&str, Option<ast::Span>)> = if xs.is_empty() {
                 vec![("", None)]
             } else {
-                xs.iter()
-                    .map(|x| (if x.name == "_" { "" } else { x.name }, Some(x.span)))
-                    .collect()
+                xs.iter().map(|x| (x.name, Some(x.span))).collect()
             };
             for (name, _) in &binders {
                 scope.push(name);
@@ -611,9 +609,9 @@ mod tests {
         assert_eq!(elab("fun x => fun x => x").to_string(), "(λ.(λ.#0))");
         assert_eq!(elab("fun x, x => x").to_string(), "(λ.(λ.#0))");
         assert_eq!(elab("(fun _ => b) a").to_string(), "((λ.b) a)");
-        assert_eq!(elab("fun _ => _").to_string(), "(λ._)");
+        assert_eq!(elab("fun _ => 1").to_string(), "(λ.1)");
         assert_eq!(elab("fun x => fun _ => x").to_string(), "(λ.(λ.#1))");
-        assert_eq!(elab("let _ = 1; _").to_string(), "(let 1 in _)");
+        assert_eq!(elab("let _ = 1; 2").to_string(), "(let 1 in 2)");
         assert_eq!(elab("a; b").to_string(), "((λ.b) a)");
         assert_eq!(elab("a != b").to_string(), "(! (== a b))");
         assert_eq!(elab("x |> f").to_string(), "(f x)");

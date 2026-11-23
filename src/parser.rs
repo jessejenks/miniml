@@ -157,6 +157,25 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn expect_binder(&mut self) -> Result<surface::Identifier<'a>, ParseError> {
+        match self.next()? {
+            Some((start, Token::Underscore, end)) => Ok(surface::Identifier {
+                name: "_",
+                span: (start..end).into(),
+            }),
+            Some((start, Token::Identifier(name), end)) => Ok(surface::Identifier {
+                name,
+                span: (start..end).into(),
+            }),
+            Some((start, actual, end)) => Err(ParseError::UnexpectedTokenExpecting {
+                actual: format!("{actual:?}"),
+                expected: "identifier".into(),
+                span: (start..end).into(),
+            }),
+            None => Err(self.eof_error()),
+        }
+    }
+
     fn expect_identifier(&mut self) -> Result<surface::Identifier<'a>, ParseError> {
         match self.next()? {
             Some((start, Token::Identifier(name), end)) => Ok(surface::Identifier {
@@ -585,7 +604,7 @@ impl<'a> Parser<'a> {
         let mut variables = Vec::new();
         if !self.chomp_if_next_is(Token::WideArrow)? {
             loop {
-                variables.push(self.expect_identifier()?);
+                variables.push(self.expect_binder()?);
                 if !self.chomp_if_next_is(Token::Comma)? {
                     break;
                 }
@@ -639,16 +658,14 @@ impl<'a> Parser<'a> {
                 kind: surface::PatternKind::Literal(surface::Literal::String(s)),
                 span: (start..end).into(),
             }),
-            Some((start, Token::Identifier(x), end)) => match x {
-                "_" => Ok(surface::Pattern {
-                    kind: surface::PatternKind::Wild,
-                    span: (start..end).into(),
-                }),
-                x => Ok(surface::Pattern {
-                    kind: surface::PatternKind::Variable(x),
-                    span: (start..end).into(),
-                }),
-            },
+            Some((start, Token::Underscore, end)) => Ok(surface::Pattern {
+                kind: surface::PatternKind::Wild,
+                span: (start..end).into(),
+            }),
+            Some((start, Token::Identifier(x), end)) => Ok(surface::Pattern {
+                kind: surface::PatternKind::Variable(x),
+                span: (start..end).into(),
+            }),
             Some((start, Token::LParen, _)) => {
                 let mut elements = vec![self.pattern()?];
                 self.expect(Token::Comma)?;

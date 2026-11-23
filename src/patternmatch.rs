@@ -611,7 +611,7 @@ mod tests {
             "match# a_0 {\n(a_1, a_2) => match# a_1 {\n1 => 0 [a_2],\n_ => match# a_2 {\n1 => 1 [a_1],\n_ => 2 [a_0]}}}"
         );
         assert_eq!(
-            compile_match("match _ { (x, y, 1) => x, (x, y, 2) => y, (_, _, 3) => \"default\" }")
+            compile_match("match t { (x, y, 1) => x, (x, y, 2) => y, (_, _, 3) => \"default\" }")
                 .to_string(),
             "match# a_0 {\n(a_1, a_2, a_3) => match# a_3 {\n1 => 0 [a_1, a_2],\n_ => match# a_3 {\n2 => 1 [a_1, a_2],\n_ => match# a_3 {\n3 => 2 [a_1, a_2],\n_ => ERR}}}}"
         );

@@ -132,6 +132,7 @@ pub enum Token<'a> {
     RParen,
     LBrace,
     RBrace,
+    Underscore,
     Comma,
     Semi,
     Colon,
@@ -409,6 +410,7 @@ impl<'a> Iterator for Lexer<'a> {
                 let end = self.chomp_while(|c| c == '\''); // only allow trailing primes
                 let value = &self.source[start..end];
                 match value {
+                    "_" => Token::Underscore,
                     "true" => Token::Bool(true),
                     "false" => Token::Bool(false),
                     _ => {
