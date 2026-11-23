@@ -73,9 +73,28 @@ impl TypeExpr {
     }
 }
 
+/// Displays named types with their declared names
+pub struct WithNames<'a, T> {
+    value: &'a T,
+    names: &'a [String],
+}
+
+impl TypeExpr {
+    pub fn with_names<'a>(&'a self, names: &'a [String]) -> WithNames<'a, TypeExpr> {
+        WithNames { value: self, names }
+    }
+}
+
 impl Display for TypeExpr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
+        self.with_names(&[]).fmt(f)
+    }
+}
+
+impl Display for WithNames<'_, TypeExpr> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names = self.names;
+        match self.value {
             TypeExpr::Unit => write!(f, "Unit"),
             TypeExpr::Bool => write!(f, "Bool"),
             TypeExpr::Char => write!(f, "Char"),
@@ -86,31 +105,35 @@ impl Display for TypeExpr {
                     f,
                     "{}{}",
                     if *eq { "''" } else { "" },
-                    Self::create_type_variable_name(*level)
+                    TypeExpr::create_type_variable_name(*level)
                 )
             }
             TypeExpr::UnifVar(id) => {
-                write!(f, "{}", Self::create_existential_variable_name(*id))
+                write!(f, "{}", TypeExpr::create_existential_variable_name(*id))
             }
             TypeExpr::Arrow(src, tgt) => {
-                if matches!(src.as_ref(), TypeExpr::Arrow(_, _)) {
+                let (src, tgt) = (src.with_names(names), tgt.with_names(names));
+                if matches!(src.value, TypeExpr::Arrow(_, _)) {
                     write!(f, "({src}) -> {tgt}")
                 } else {
                     write!(f, "{src} -> {tgt}")
                 }
             }
             TypeExpr::Named(id, args) => {
-                write!(f, "T_{}", id.0)?;
+                match names.get(id.0) {
+                    Some(name) => write!(f, "{name}")?,
+                    None => write!(f, "T_{}", id.0)?,
+                }
                 for t in args.iter() {
                     match t {
                         TypeExpr::Arrow(_, _) => {
-                            write!(f, " ({t})")?;
+                            write!(f, " ({})", t.with_names(names))?;
                         }
                         TypeExpr::Named(_, inner_args) if !inner_args.is_empty() => {
-                            write!(f, " ({t})")?;
+                            write!(f, " ({})", t.with_names(names))?;
                         }
                         _ => {
-                            write!(f, " {t}")?;
+                            write!(f, " {}", t.with_names(names))?;
                         }
                     }
                 }
@@ -122,7 +145,7 @@ impl Display for TypeExpr {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{e}")?;
+                    write!(f, "{}", e.with_names(names))?;
                 }
                 write!(f, ")")
             }
@@ -138,19 +161,30 @@ pub struct Scheme {
 
 impl Display for Scheme {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.arity == 0 {
-            self.tp.fmt(f)
+        self.with_names(&[]).fmt(f)
+    }
+}
+
+impl Display for WithNames<'_, Scheme> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let tp = self.value.tp.with_names(self.names);
+        if self.value.arity == 0 {
+            tp.fmt(f)
         } else {
             write!(f, "(")?;
-            for level in 0..=TypeExpr::max_type_variable_level(&self.tp) {
+            for level in 0..=TypeExpr::max_type_variable_level(&self.value.tp) {
                 write!(f, "∀{}.", TypeExpr::create_type_variable_name(level))?;
             }
-            write!(f, "{})", self.tp)
+            write!(f, "{tp})")
         }
     }
 }
 
 impl Scheme {
+    pub fn with_names<'a>(&'a self, names: &'a [String]) -> WithNames<'a, Scheme> {
+        WithNames { value: self, names }
+    }
+
     pub fn as_monotype(tp: TypeExpr) -> Scheme {
         Scheme { arity: 0, tp }
     }
@@ -251,6 +285,7 @@ pub struct TypeChecker {
     eq: Vec<bool>, // which type variables can be compared with ==
     levels: Vec<i64>,
     current_level: i64,
+    type_names: Vec<String>,
 }
 
 impl TypeChecker {
@@ -265,6 +300,7 @@ impl TypeChecker {
             eq: Vec::new(),
             levels: Vec::new(),
             current_level: 0,
+            type_names: Vec::new(),
         }
     }
 
@@ -281,6 +317,7 @@ impl TypeChecker {
 
     pub fn add_types(&mut self, decls: &[ast::TypeDecl]) {
         for (id, decl) in decls.iter().enumerate() {
+            self.type_names.push(decl.name.clone());
             let arity = u32::try_from(decl.arity).unwrap();
             let params = (0..i64::from(arity)).map(|i| TypeExpr::Var(i, false));
             let result = TypeExpr::Named(TypeId(id), params.collect());
@@ -306,6 +343,10 @@ impl TypeChecker {
 
     pub fn bindings(&self) -> &[(ast::Span, Scheme)] {
         &self.bindings
+    }
+
+    pub fn type_names(&self) -> &[String] {
+        &self.type_names
     }
 
     fn algorithm_j(&mut self, expr: &ast::Expr) -> Result<TypeExpr> {
@@ -712,7 +753,9 @@ impl TypeChecker {
             TypeExpr::Named(id, elts) => {
                 if !self.fields_allow_equality(id, &mut HashSet::new()) {
                     return Err(TypeError::Equality {
-                        tp: TypeExpr::Named(id, elts).to_string(),
+                        tp: TypeExpr::Named(id, elts)
+                            .with_names(&self.type_names)
+                            .to_string(),
                         span: span.into(),
                     });
                 }
@@ -728,7 +771,7 @@ impl TypeChecker {
                 Ok(())
             }
             other => Err(TypeError::Equality {
-                tp: other.to_string(),
+                tp: other.with_names(&self.type_names).to_string(),
                 span: span.into(),
             }),
         }
@@ -813,7 +856,7 @@ impl TypeChecker {
             (TypeExpr::UnifVar(id), tp) | (tp, TypeExpr::UnifVar(id)) => {
                 if self.occurs(id, tp.clone()) {
                     Err(TypeError::OccursCheck {
-                        tp: self.resolve(tp).to_string(),
+                        tp: self.resolve(tp).with_names(&self.type_names).to_string(),
                         span: span.into(),
                     })
                 } else {
@@ -829,8 +872,8 @@ impl TypeChecker {
             }
             (l, r) if l == r => Ok(()),
             (l, r) => Err(TypeError::Unification {
-                left: l.to_string(),
-                right: r.to_string(),
+                left: l.with_names(&self.type_names).to_string(),
+                right: r.with_names(&self.type_names).to_string(),
                 span: span.into(),
             }),
         }
@@ -1005,7 +1048,9 @@ mod tests {
         let (program, decls) = front_end(source);
         let mut checker = TypeChecker::new();
         checker.add_types(&decls);
-        checker.infer(&program).map(|scheme| scheme.to_string())
+        checker
+            .infer(&program)
+            .map(|scheme| scheme.with_names(checker.type_names()).to_string())
     }
 
     fn arrow(left: TypeExpr, right: TypeExpr) -> TypeExpr {
@@ -1116,26 +1161,26 @@ mod tests {
                  {source}"
             ))
         };
-        assert_eq!(check("Option::None").unwrap(), "(∀α.T_0 α)");
-        assert_eq!(check("Option::Some").unwrap(), "(∀α.α -> T_0 α)");
-        assert_eq!(check("Option::Some 1").unwrap(), "T_0 Int");
-        assert_eq!(check("Pair::Pair 1").unwrap(), "Int -> T_2");
+        assert_eq!(check("Option::None").unwrap(), "(∀α.Option α)");
+        assert_eq!(check("Option::Some").unwrap(), "(∀α.α -> Option α)");
+        assert_eq!(check("Option::Some 1").unwrap(), "Option Int");
+        assert_eq!(check("Pair::Pair 1").unwrap(), "Int -> Pair");
         assert_eq!(
             check("List::Cons 1 (List::Cons 2 List::Nil)").unwrap(),
-            "T_1 Int"
+            "List Int"
         );
         assert_eq!(
             check("let none = Option::None; (Option::Some 1, none, Option::Some true, none)")
                 .unwrap(),
-            "(∀α.∀β.(T_0 Int, T_0 α, T_0 Bool, T_0 β))"
+            "(∀α.∀β.(Option Int, Option α, Option Bool, Option β))"
         );
         assert_eq!(
             check("Option::Some (Option::Some 1)").unwrap(),
-            "T_0 (T_0 Int)"
+            "Option (Option Int)"
         );
         assert_eq!(
             check("Option::Some (fun x => x)").unwrap(),
-            "(∀α.T_0 (α -> α))"
+            "(∀α.Option (α -> α))"
         );
 
         for source in [
@@ -1224,7 +1269,7 @@ mod tests {
         );
         assert_eq!(
             check("type A a = A a; fun x => match x { A::A x => x }").unwrap(),
-            "(∀α.T_0 α -> α)"
+            "(∀α.A α -> α)"
         );
         assert_eq!(
             check(
@@ -1236,7 +1281,7 @@ mod tests {
                  }"
             )
             .unwrap(),
-            "T_0 Int -> Int"
+            "List Int -> Int"
         );
         assert_eq!(
             check(
@@ -1246,7 +1291,7 @@ mod tests {
                  }"
             )
             .unwrap(),
-            "(∀α.T_0 (Int, Int, α) -> Int)"
+            "(∀α.List (Int, Int, α) -> Int)"
         );
     }
 

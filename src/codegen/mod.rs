@@ -507,7 +507,7 @@ impl<'ctx> Compiler<'ctx> {
         self.builder
             .build_switch(index.as_basic_value().into_int_value(), invalid, &cases)?;
 
-        for ((i, (_, fields)), (_, case)) in decl.constructors.iter().enumerate().zip(&cases) {
+        for ((ctor, fields), (_, case)) in decl.constructors.iter().zip(&cases) {
             self.builder.position_at_end(*case);
             let field_kinds: Vec<ResultKind> =
                 fields.iter().map(|tp| result_kind(tp, kinds)).collect();
@@ -517,16 +517,15 @@ impl<'ctx> Compiler<'ctx> {
                 self.builder.build_unreachable()?;
                 continue;
             }
-            self.call_printf(&format!("T_{}::[{i}]", id.0), &[])?;
-            if !field_kinds.is_empty() {
+            if field_kinds.is_empty() {
+                self.call_printf(&format!("{}::{ctor}", decl.name), &[])?;
+            } else {
                 let ptr = self
                     .builder
                     .build_int_to_ptr(value, self.ptr_type, "fields")?;
-                self.call_printf("(", &[])?;
+                self.call_printf(&format!("({}::{ctor}", decl.name), &[])?;
                 for (j, kind) in field_kinds.iter().enumerate() {
-                    if j > 0 {
-                        self.call_printf(", ", &[])?;
-                    }
+                    self.call_printf(" ", &[])?;
                     let field = unsafe {
                         self.builder.build_gep(
                             self.word,

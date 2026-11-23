@@ -117,6 +117,7 @@ fn main() -> miette::Result<()> {
     let sch = type_checker
         .infer(&elaborated_program)
         .map_err(|e| report(e, &args.path, &source))?;
+    let type_names = type_checker.type_names();
     let constructor_counts = elaborated_decls
         .iter()
         .map(|d| d.constructors.len())
@@ -149,22 +150,29 @@ fn main() -> miette::Result<()> {
             let bindings = type_checker.bindings();
             for span in spans {
                 if let Some((_, scheme)) = bindings.iter().find(|(sp, _)| *sp == span) {
-                    println!("{} : {scheme}", &source[span.start..span.end]);
+                    println!(
+                        "{} : {}",
+                        &source[span.start..span.end],
+                        scheme.with_names(type_names)
+                    );
                 }
             }
         }
-        println!("- : {sch}");
+        println!("- : {}", sch.with_names(type_names));
         return Ok(());
     }
 
-    let (result_kind, result_label) = (result_kind(sch.tp(), &[]), format!("- : {sch} = "));
+    let (result_kind, result_label) = (
+        result_kind(sch.tp(), &[]),
+        format!("- : {} = ", sch.with_names(type_names)),
+    );
 
     if args.patterns {
         return Ok(());
     }
 
     if args.interpret {
-        let interpreted = interpret(&elaborated_program);
+        let interpreted = interpret(&elaborated_program, &elaborated_decls);
         println!("{result_label}{interpreted}");
         return Ok(());
     }

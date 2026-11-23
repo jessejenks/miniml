@@ -1,5 +1,5 @@
 use crate::{ast, typecheck};
-use std::fmt::Display;
+use std::{fmt::Display, rc::Rc};
 
 #[derive(PartialEq, Clone)]
 pub enum Pattern {
@@ -57,7 +57,8 @@ pub enum Expr {
     Binary(ast::BinaryOp, Box<Expr>, Box<Expr>),
     Tuple(Vec<Expr>),
     Match(Box<Expr>, Vec<(Pattern, Expr)>),
-    Constructor(typecheck::TypeId, usize, Vec<Expr>),
+    // the qualified name is only for display
+    Constructor(typecheck::TypeId, usize, Rc<str>, Vec<Expr>),
 }
 
 impl Display for Expr {
@@ -99,58 +100,74 @@ impl Display for Expr {
                 }
                 write!(f, " }})")
             }
-            Expr::Constructor(id, index, args) => {
-                write!(f, "T_{}::[{index}]", id.0)?;
-                if !args.is_empty() {
-                    write!(f, "(")?;
-                    for (i, arg) in args.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{arg}")?;
-                    }
-                    write!(f, ")")?;
+            Expr::Constructor(_, _, name, args) => {
+                if args.is_empty() {
+                    return write!(f, "{name}");
                 }
-                Ok(())
+                write!(f, "({name}")?;
+                for arg in args {
+                    write!(f, " {arg}")?;
+                }
+                write!(f, ")")
             }
         }
     }
 }
 
-fn to_spanless(expr: &ast::Expr) -> Expr {
+fn to_spanless(expr: &ast::Expr, decls: &[ast::TypeDecl]) -> Expr {
     match &expr.kind {
         ast::ExprKind::Literal(lit) => Expr::Literal(lit.clone()),
         ast::ExprKind::BoundVariable(i) => Expr::BoundVariable(*i),
         ast::ExprKind::FreeVariable(x) => Expr::FreeVariable(x.clone()),
-        ast::ExprKind::Application(left, right) => {
-            Expr::Application(Box::new(to_spanless(left)), Box::new(to_spanless(right)))
+        ast::ExprKind::Application(left, right) => Expr::Application(
+            Box::new(to_spanless(left, decls)),
+            Box::new(to_spanless(right, decls)),
+        ),
+        ast::ExprKind::Abstraction(_, body) => {
+            Expr::Abstraction(Box::new(to_spanless(body, decls)))
         }
-        ast::ExprKind::Abstraction(_, body) => Expr::Abstraction(Box::new(to_spanless(body))),
         ast::ExprKind::LetIn(is_rec, pattern, expr, body) => Expr::LetIn(
             *is_rec,
             to_spanless_pattern(pattern),
-            Box::new(to_spanless(expr)),
-            Box::new(to_spanless(body)),
+            Box::new(to_spanless(expr, decls)),
+            Box::new(to_spanless(body, decls)),
         ),
         ast::ExprKind::IfElse(condition, consequence, alternative) => Expr::IfElse(
-            Box::new(to_spanless(condition)),
-            Box::new(to_spanless(consequence)),
-            Box::new(to_spanless(alternative)),
+            Box::new(to_spanless(condition, decls)),
+            Box::new(to_spanless(consequence, decls)),
+            Box::new(to_spanless(alternative, decls)),
         ),
-        ast::ExprKind::Unary(op, expr) => Expr::Unary(*op, Box::new(to_spanless(expr))),
+        ast::ExprKind::Unary(op, expr) => Expr::Unary(*op, Box::new(to_spanless(expr, decls))),
         ast::ExprKind::Binary(op, left, right) => Expr::Binary(
             *op,
-            Box::new(to_spanless(left)),
-            Box::new(to_spanless(right)),
+            Box::new(to_spanless(left, decls)),
+            Box::new(to_spanless(right, decls)),
         ),
-        ast::ExprKind::Tuple(elements) => Expr::Tuple(elements.iter().map(to_spanless).collect()),
+        ast::ExprKind::Tuple(elements) => {
+            Expr::Tuple(elements.iter().map(|e| to_spanless(e, decls)).collect())
+        }
         ast::ExprKind::Constructor(id, index, args) => {
-            Expr::Constructor(*id, *index, args.iter().map(to_spanless).collect())
+            let name = decls
+                .get(id.0)
+                .and_then(|decl| {
+                    Some(format!(
+                        "{}::{}",
+                        decl.name,
+                        decl.constructors.get(*index)?.0
+                    ))
+                })
+                .unwrap_or_else(|| format!("T_{}::[{index}]", id.0));
+            Expr::Constructor(
+                *id,
+                *index,
+                name.into(),
+                args.iter().map(|e| to_spanless(e, decls)).collect(),
+            )
         }
         ast::ExprKind::Match(scrutinee, arms) => Expr::Match(
-            Box::new(to_spanless(scrutinee)),
+            Box::new(to_spanless(scrutinee, decls)),
             arms.iter()
-                .map(|(p, e)| (to_spanless_pattern(p), to_spanless(e)))
+                .map(|(p, e)| (to_spanless_pattern(p), to_spanless(e, decls)))
                 .collect(),
         ),
     }
@@ -193,14 +210,13 @@ fn get_leaves(pattern: &Pattern, value: &Expr, out: &mut Vec<Expr>) -> bool {
                 .zip(elements)
                 .all(|(p, v)| get_leaves(p, v, out))
         }
-        (Pattern::Constructor(p_id, p_index, patterns), Expr::Constructor(e_id, e_index, args))
-            if p_id == e_id && p_index == e_index && patterns.len() == args.len() =>
-        {
-            patterns
-                .iter()
-                .zip(args)
-                .all(|(p, v)| get_leaves(p, v, out))
-        }
+        (
+            Pattern::Constructor(p_id, p_index, patterns),
+            Expr::Constructor(e_id, e_index, _, args),
+        ) if p_id == e_id && p_index == e_index && patterns.len() == args.len() => patterns
+            .iter()
+            .zip(args)
+            .all(|(p, v)| get_leaves(p, v, out)),
         _ => false,
     }
 }
@@ -251,9 +267,10 @@ fn shift(i: i64, c: i64, expr: Expr) -> Expr {
                 })
                 .collect(),
         ),
-        Expr::Constructor(id, index, args) => Expr::Constructor(
+        Expr::Constructor(id, index, name, args) => Expr::Constructor(
             id,
             index,
+            name,
             args.into_iter().map(|e| shift(i, c, e)).collect(),
         ),
     }
@@ -317,9 +334,10 @@ fn substitute(t: Expr, n: i64, expr: Expr) -> Expr {
                 .collect();
             Expr::Match(Box::new(substitute(*scrutinee, n, expr)), new_arms)
         }
-        Expr::Constructor(id, index, args) => Expr::Constructor(
+        Expr::Constructor(id, index, name, args) => Expr::Constructor(
             id,
             index,
+            name,
             args.into_iter()
                 .map(|e| substitute(e, n, expr.clone()))
                 .collect(),
@@ -332,8 +350,8 @@ fn beta(body: Expr, right: Expr) -> Expr {
 }
 
 // call by value
-pub fn interpret(expr: &ast::Expr) -> Expr {
-    let spanless = to_spanless(expr);
+pub fn interpret(expr: &ast::Expr, decls: &[ast::TypeDecl]) -> Expr {
+    let spanless = to_spanless(expr, decls);
     cbv(spanless)
 }
 
@@ -513,8 +531,8 @@ fn cbv(expr: Expr) -> Expr {
             }
         }
         Expr::Tuple(elements) => Expr::Tuple(elements.into_iter().map(cbv).collect()),
-        Expr::Constructor(id, index, args) => {
-            Expr::Constructor(id, index, args.into_iter().map(cbv).collect())
+        Expr::Constructor(id, index, name, args) => {
+            Expr::Constructor(id, index, name, args.into_iter().map(cbv).collect())
         }
         Expr::Match(scrutinee, arms) => {
             let v = cbv(*scrutinee);
@@ -544,9 +562,10 @@ fn values_equal(a: &Expr, b: &Expr) -> Option<bool> {
             Some(a == b)
         }
         (Expr::Tuple(a), Expr::Tuple(b)) if a.len() == b.len() => all_values_equal(a, b),
-        (Expr::Constructor(a_id, a_index, a_args), Expr::Constructor(b_id, b_index, b_args))
-            if a_id == b_id =>
-        {
+        (
+            Expr::Constructor(a_id, a_index, _, a_args),
+            Expr::Constructor(b_id, b_index, _, b_args),
+        ) if a_id == b_id => {
             if a_index != b_index {
                 return Some(false);
             }
@@ -577,7 +596,8 @@ mod tests {
     use crate::test_util::front_end;
 
     fn interp(source: &str) -> Expr {
-        interpret(&front_end(source).0)
+        let (program, decls) = front_end(source);
+        interpret(&program, &decls)
     }
 
     #[test]
@@ -591,21 +611,21 @@ mod tests {
             ))
             .to_string()
         };
-        assert_eq!(interp("Option::None"), "T_0::[0]");
-        assert_eq!(interp("Option::Some (1 + 2)"), "T_0::[1](3)");
+        assert_eq!(interp("Option::None"), "Option::None");
+        assert_eq!(interp("Option::Some (1 + 2)"), "(Option::Some 3)");
         assert_eq!(
             interp("List::Cons 1 (List::Cons 2 List::Nil)"),
-            "T_1::[1](1, T_1::[1](2, T_1::[0]))"
+            "(List::Cons 1 (List::Cons 2 List::Nil))"
         );
         // partial application
-        assert_eq!(interp("Pair::Pair 1"), "(λ.T_2::[0](1, #0))");
+        assert_eq!(interp("Pair::Pair 1"), "(λ.(Pair::Pair 1 #0))");
         assert_eq!(
             interp("let p = Pair::Pair 1; (p 2, p 3)"),
-            "(T_2::[0](1, 2), T_2::[0](1, 3))"
+            "((Pair::Pair 1 2), (Pair::Pair 1 3))"
         );
         assert_eq!(
             interp("let x = 5; let f = fun y => Option::Some (x, y); f 6"),
-            "T_0::[1]((5, 6))"
+            "(Option::Some (5, 6))"
         );
     }
 
@@ -801,7 +821,7 @@ mod tests {
             Option::Some 'a' == Either::Right 'a'"
             )
             .to_string(),
-            "(== T_0::[1]('a') T_1::[1]('a'))"
+            "(== (Option::Some 'a') (Either::Right 'a'))"
         );
         assert_eq!(
             interp(

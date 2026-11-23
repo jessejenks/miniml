@@ -100,8 +100,8 @@ fn run(source: &str) -> i64 {
 
 fn agrees(source: &str) {
     // compare to reference interpreter
-    let (program, _) = front_end(source);
-    let expected = interpret(&program).to_string();
+    let (program, decls) = front_end(source);
+    let expected = interpret(&program, &decls).to_string();
     assert_eq!(run(source).to_string(), expected, "{source}");
 }
 
