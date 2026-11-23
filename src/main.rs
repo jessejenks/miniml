@@ -117,9 +117,17 @@ fn main() -> miette::Result<()> {
     let sch = type_checker
         .infer(&elaborated_program)
         .map_err(|e| report(e, &args.path, &source))?;
-
-    let compiled_trees = patternmatch::check_patterns(&elaborated_program, &source, args.patterns)
-        .map_err(|e| report(e, &args.path, &source))?;
+    let constructor_counts = elaborated_decls
+        .iter()
+        .map(|d| d.constructors.len())
+        .collect::<Vec<_>>();
+    let compiled_trees = patternmatch::check_patterns(
+        &elaborated_program,
+        &source,
+        args.patterns,
+        &constructor_counts,
+    )
+    .map_err(|e| report(e, &args.path, &source))?;
 
     if args.types {
         let mut spans = Vec::new();

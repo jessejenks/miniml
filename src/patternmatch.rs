@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use thiserror::Error;
 
-use crate::ast;
+use crate::{ast, typecheck};
 
 #[derive(Debug, Error, Diagnostic)]
 pub enum PatternMatchError {
@@ -52,6 +52,13 @@ impl Display for Binder {
 pub enum Branch {
     Literal(ast::Literal, Box<Tree>, Option<Box<Tree>>),
     Tuple(Vec<MatchVar>, Box<Tree>),
+    Constructor(
+        typecheck::TypeId,
+        usize,
+        Vec<MatchVar>,
+        Box<Tree>,
+        Option<Box<Tree>>,
+    ),
 }
 
 impl Display for Branch {
@@ -73,15 +80,26 @@ impl Display for Branch {
                 }
                 Ok(())
             }
-            Branch::Tuple(patterns, tree) => {
+            Branch::Tuple(vars, tree) => {
                 write!(f, "(")?;
-                for (i, p) in patterns.iter().enumerate() {
+                for (i, v) in vars.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{p}")?;
+                    write!(f, "{v}")?;
                 }
                 write!(f, ") => {tree}")
+            }
+            Branch::Constructor(id, index, vars, tree, alternative) => {
+                write!(f, "T_{}::[{index}]", id.0)?;
+                for v in vars {
+                    write!(f, " {v}")?;
+                }
+                write!(f, " => {tree}")?;
+                if let Some(alternative) = alternative {
+                    write!(f, ",\n_ => {alternative}")?;
+                }
+                Ok(())
             }
         }
     }
@@ -117,6 +135,7 @@ enum Pattern {
     Bind(Binder),
     Literal(ast::Literal),
     Tuple(Vec<Pattern>),
+    Constructor(typecheck::TypeId, usize, Vec<Pattern>),
 }
 
 impl Display for Pattern {
@@ -133,6 +152,16 @@ impl Display for Pattern {
                     write!(f, "{p}")?;
                 }
                 write!(f, ")")
+            }
+            Pattern::Constructor(id, index, patterns) => {
+                write!(f, "T_{}::[{index}]", id.0)?;
+                for p in patterns {
+                    match p {
+                        Self::Constructor(_, _, args) if !args.is_empty() => write!(f, " ({p})")?,
+                        _ => write!(f, " {p}")?,
+                    }
+                }
+                Ok(())
             }
         }
     }
@@ -170,6 +199,7 @@ impl Display for Clause {
 enum Head {
     Literal(ast::Literal),
     Tuple(Vec<Pattern>),
+    Constructor(typecheck::TypeId, usize, Vec<Pattern>),
 }
 
 impl Display for Head {
@@ -186,6 +216,18 @@ impl Display for Head {
                 }
                 write!(f, ")")
             }
+            Head::Constructor(id, index, patterns) => {
+                write!(f, "T_{}::[{index}]", id.0)?;
+                for p in patterns {
+                    match p {
+                        Pattern::Constructor(_, _, args) if !args.is_empty() => {
+                            write!(f, " ({p})")?;
+                        }
+                        _ => write!(f, " {p}")?,
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -198,6 +240,9 @@ impl NormalizedTest {
         let pattern = match head {
             Head::Literal(lit) => Pattern::Literal(lit.clone()),
             Head::Tuple(patterns) => Pattern::Tuple(patterns.clone()),
+            Head::Constructor(id, index, patterns) => {
+                Pattern::Constructor(*id, *index, patterns.clone())
+            }
         };
         Test(*var, pattern)
     }
@@ -272,7 +317,16 @@ fn number_binders(pattern: &ast::Pattern, first: Binder) -> (Pattern, Binder) {
             }
             (Pattern::Tuple(numbered), next)
         }
-        ast::PatternKind::Constructor(_, _, _) => todo!(),
+        ast::PatternKind::Constructor(id, index, patterns) => {
+            let mut next = first;
+            let mut numbered = Vec::with_capacity(patterns.len());
+            for p in patterns {
+                let (pattern, after) = number_binders(p, next);
+                numbered.push(pattern);
+                next = after;
+            }
+            (Pattern::Constructor(*id, *index, numbered), next)
+        }
     }
 }
 
@@ -290,21 +344,30 @@ fn clauses(arms: &[(ast::Pattern, ast::Expr)]) -> Vec<Clause> {
         .collect()
 }
 
-pub struct MatchCompiler {
-    next_var: usize,
-    fail_early: bool,
+#[derive(Clone, PartialEq)]
+enum Ctor {
+    Literal(ast::Literal),
+    Adt(usize),
 }
 
-impl MatchCompiler {
+pub struct MatchCompiler<'a> {
+    next_var: usize,
+    fail_early: bool,
+    constructor_counts: &'a [usize],
+}
+
+impl<'a> MatchCompiler<'a> {
     pub fn compile(
         span: ast::Span,
         arms: &[(ast::Pattern, ast::Expr)],
         fail_early: bool,
+        constructor_counts: &'a [usize],
     ) -> Result<Tree, PatternMatchError> {
         // match variable 0 holds the scrutinee
         let mut compiler = MatchCompiler {
             next_var: 1,
             fail_early,
+            constructor_counts,
         };
         compiler.build(span, &clauses(arms), &HashMap::new())
     }
@@ -319,7 +382,7 @@ impl MatchCompiler {
         &mut self,
         span: ast::Span,
         clauses: &[Clause],
-        remaining: &HashMap<MatchVar, Vec<ast::Literal>>,
+        remaining: &HashMap<MatchVar, Vec<Ctor>>,
     ) -> Result<Tree, PatternMatchError> {
         // base cases
         if clauses.is_empty() {
@@ -343,6 +406,12 @@ impl MatchCompiler {
                     }
                     Pattern::Tuple(patterns) => {
                         new_tests.push(NormalizedTest(*var, Head::Tuple(patterns.clone())));
+                    }
+                    Pattern::Constructor(id, index, patterns) => {
+                        new_tests.push(NormalizedTest(
+                            *var,
+                            Head::Constructor(*id, *index, patterns.clone()),
+                        ));
                     }
                 }
             }
@@ -422,24 +491,99 @@ impl MatchCompiler {
                 // step 5, recurse on [A] and [B]
                 let matched = self.build(span, &match_clauses, remaining)?;
 
-                let alternate = match remaining.get(&var).cloned().or_else(|| siblings(&lit)) {
-                    None => Some(self.build(span, &alternate_clauses, remaining)?),
-                    Some(possible) => {
-                        let others: Vec<ast::Literal> =
-                            possible.into_iter().filter(|l| *l != lit).collect();
-                        if others.is_empty() {
-                            None
-                        } else {
-                            let mut remaining = remaining.clone();
-                            remaining.insert(var, others);
-                            Some(self.build(span, &alternate_clauses, &remaining)?)
-                        }
-                    }
-                };
+                let alternate = self.build_alternate(
+                    span,
+                    var,
+                    &Ctor::Literal(lit.clone()),
+                    siblings(&lit).map(|s| s.into_iter().map(Ctor::Literal).collect()),
+                    &alternate_clauses,
+                    remaining,
+                )?;
                 Ok(Tree::Branch(
                     var,
                     Branch::Literal(lit, Box::new(matched), alternate.map(Box::new)),
                 ))
+            }
+            Head::Constructor(id, index, patterns) => {
+                let vars: Vec<MatchVar> = patterns.iter().map(|_| self.fresh_var()).collect();
+                let mut match_clauses = Vec::new();
+                let mut alternate_clauses = Vec::new();
+                for clause in &new_clauses {
+                    let Some(j) = clause.tests.iter().position(|t| t.0 == var) else {
+                        // (c)
+                        match_clauses.push(clause.to_clause());
+                        alternate_clauses.push(clause.to_clause());
+                        continue;
+                    };
+                    let Head::Constructor(_, other_index, patterns) = &clause.tests[j].1 else {
+                        unreachable!(
+                            "a constructor match variable is only tested against constructors"
+                        );
+                    };
+                    if index == *other_index {
+                        // (a)
+                        let mut tests: Vec<Test> = clause.tests[..j]
+                            .iter()
+                            .map(NormalizedTest::to_test)
+                            .collect();
+                        tests.extend(vars.iter().zip(patterns).map(|(s, p)| Test(*s, p.clone())));
+                        tests.extend(clause.tests[j + 1..].iter().map(NormalizedTest::to_test));
+                        let new_clause = Clause {
+                            tests,
+                            bindings: clause.bindings.clone(),
+                            arm: clause.arm,
+                        };
+                        match_clauses.push(new_clause);
+                    } else {
+                        // (b)
+                        alternate_clauses.push(clause.to_clause());
+                    }
+                }
+                let matched = self.build(span, &match_clauses, remaining)?;
+
+                let count = self.constructor_counts[id.0];
+                let alternate = self.build_alternate(
+                    span,
+                    var,
+                    &Ctor::Adt(index),
+                    Some((0..count).map(Ctor::Adt).collect()),
+                    &alternate_clauses,
+                    remaining,
+                )?;
+                Ok(Tree::Branch(
+                    var,
+                    Branch::Constructor(
+                        id,
+                        index,
+                        vars,
+                        Box::new(matched),
+                        alternate.map(Box::new),
+                    ),
+                ))
+            }
+        }
+    }
+
+    fn build_alternate(
+        &mut self,
+        span: ast::Span,
+        var: MatchVar,
+        tested: &Ctor,
+        initial: Option<Vec<Ctor>>,
+        clauses: &[Clause],
+        remaining: &HashMap<MatchVar, Vec<Ctor>>,
+    ) -> Result<Option<Tree>, PatternMatchError> {
+        match remaining.get(&var).cloned().or(initial) {
+            None => Ok(Some(self.build(span, clauses, remaining)?)),
+            Some(possible) => {
+                let others: Vec<Ctor> = possible.into_iter().filter(|c| c != tested).collect();
+                if others.is_empty() {
+                    Ok(None)
+                } else {
+                    let mut remaining = remaining.clone();
+                    remaining.insert(var, others);
+                    Ok(Some(self.build(span, clauses, &remaining)?))
+                }
             }
         }
     }
@@ -449,9 +593,10 @@ pub fn check_patterns(
     expr: &ast::Expr,
     source: &str,
     debug: bool,
+    constructor_counts: &[usize],
 ) -> Result<HashMap<ast::Span, Tree>, PatternMatchError> {
     let mut map = HashMap::new();
-    capture_trees(expr, source, debug, &mut map)?;
+    capture_trees(expr, source, debug, constructor_counts, &mut map)?;
     Ok(map)
 }
 
@@ -459,41 +604,47 @@ fn capture_trees(
     expr: &ast::Expr,
     source: &str,
     debug: bool,
+    constructor_counts: &[usize],
     map: &mut HashMap<ast::Span, Tree>,
 ) -> Result<(), PatternMatchError> {
     match &expr.kind {
         ast::ExprKind::Literal(_)
         | ast::ExprKind::BoundVariable(_)
-        | ast::ExprKind::FreeVariable(_)
-        | ast::ExprKind::Constructor(_, _, _) => Ok(()), // TODO constructors
+        | ast::ExprKind::FreeVariable(_) => Ok(()),
         ast::ExprKind::Application(left, right) | ast::ExprKind::Binary(_, left, right) => {
-            capture_trees(left, source, debug, map)?;
-            capture_trees(right, source, debug, map)
+            capture_trees(left, source, debug, constructor_counts, map)?;
+            capture_trees(right, source, debug, constructor_counts, map)
         }
         ast::ExprKind::Abstraction(_, expr) | ast::ExprKind::Unary(_, expr) => {
-            capture_trees(expr, source, debug, map)
+            capture_trees(expr, source, debug, constructor_counts, map)
         }
         ast::ExprKind::LetIn(_, _, expr, body) => {
-            capture_trees(expr, source, debug, map)?;
-            capture_trees(body, source, debug, map)
+            capture_trees(expr, source, debug, constructor_counts, map)?;
+            capture_trees(body, source, debug, constructor_counts, map)
         }
         ast::ExprKind::IfElse(condition, consequence, alternative) => {
-            capture_trees(condition, source, debug, map)?;
-            capture_trees(consequence, source, debug, map)?;
-            capture_trees(alternative, source, debug, map)
+            capture_trees(condition, source, debug, constructor_counts, map)?;
+            capture_trees(consequence, source, debug, constructor_counts, map)?;
+            capture_trees(alternative, source, debug, constructor_counts, map)
         }
         ast::ExprKind::Tuple(elements) => {
             for element in elements {
-                capture_trees(element, source, debug, map)?;
+                capture_trees(element, source, debug, constructor_counts, map)?;
+            }
+            Ok(())
+        }
+        ast::ExprKind::Constructor(_, _, args) => {
+            for arg in args {
+                capture_trees(arg, source, debug, constructor_counts, map)?;
             }
             Ok(())
         }
         ast::ExprKind::Match(scrutinee, arms) => {
-            capture_trees(scrutinee, source, debug, map)?;
+            capture_trees(scrutinee, source, debug, constructor_counts, map)?;
             for (_, body) in arms {
-                capture_trees(body, source, debug, map)?;
+                capture_trees(body, source, debug, constructor_counts, map)?;
             }
-            let tree = MatchCompiler::compile(expr.span, arms, !debug)?;
+            let tree = MatchCompiler::compile(expr.span, arms, !debug, constructor_counts)?;
             if debug {
                 println!("source:\n{}", source_text(source, expr.span));
                 println!("\ntree:");
@@ -569,6 +720,21 @@ fn debug_branch(
             println!("{indent}| ({}) =>", vars.join(", "));
             debug_tree(matched, arms, source, depth + 1)
         }
+        Branch::Constructor(id, index, vars, matched, alternate) => {
+            let vars: Vec<String> = vars.iter().map(ToString::to_string).collect();
+            println!(
+                "{indent}| T_{}::[{index}]{}{} =>",
+                id.0,
+                if vars.is_empty() { "" } else { " " },
+                vars.join(" ")
+            );
+            debug_tree(matched, arms, source, depth + 1)?;
+            if let Some(alternate) = alternate {
+                println!("{indent}| _ =>");
+                debug_tree(alternate, arms, source, depth + 1)?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -580,12 +746,11 @@ fn collect_binder_spans(spans: &mut Vec<ast::Span>, pattern: &ast::Pattern) {
     match &pattern.kind {
         ast::PatternKind::Literal(_) => {}
         ast::PatternKind::Wild | ast::PatternKind::Variable => spans.push(pattern.span),
-        ast::PatternKind::Tuple(patterns) => {
+        ast::PatternKind::Tuple(patterns) | ast::PatternKind::Constructor(_, _, patterns) => {
             for p in patterns {
                 collect_binder_spans(spans, p);
             }
         }
-        ast::PatternKind::Constructor(_, _, _) => todo!(),
     }
 }
 
@@ -595,27 +760,131 @@ mod tests {
     use crate::test_util::front_end;
 
     fn compile_match(source: &str) -> Tree {
-        let (program, _) = front_end(source);
+        let (program, decls) = front_end(source);
         let ast::ExprKind::Match(scrutinee, arms) = &program.kind else {
             panic!("expected a match: {source}");
         };
-        MatchCompiler::compile(scrutinee.span, arms, false).unwrap()
+        let constructor_counts = decls
+            .iter()
+            .map(|d| d.constructors.len())
+            .collect::<Vec<_>>();
+        MatchCompiler::compile(scrutinee.span, arms, false, &constructor_counts).unwrap()
     }
 
     #[test]
     fn compiles_matches() {
         assert_eq!(
-            compile_match(r#"match x { ("A", _) => 0, (_, "B") => 1, (x, y) => 2 }"#).to_string(),
-            "match# a_0 {\n(a_1, a_2) => match# a_1 {\n\"A\" => 0 [a_2],\n_ => match# a_2 {\n\"B\" => 1 [a_1],\n_ => 2 [a_1, a_2]}}}"
+            compile_match(
+                r#"match x {
+                     ("A", _) => 0,
+                     (_, "B") => 1,
+                     (x, y) => 2,
+                   }"#
+            )
+            .to_string(),
+            "match# a_0 {
+(a_1, a_2) => match# a_1 {
+\"A\" => 0 [a_2],
+_ => match# a_2 {
+\"B\" => 1 [a_1],
+_ => 2 [a_1, a_2]}}}"
         );
         assert_eq!(
-            compile_match("match x { (1, _) => 0, (_, 1) => 1, _ => 2 }").to_string(),
-            "match# a_0 {\n(a_1, a_2) => match# a_1 {\n1 => 0 [a_2],\n_ => match# a_2 {\n1 => 1 [a_1],\n_ => 2 [a_0]}}}"
+            compile_match(
+                "match x {
+                   (1, _) => 0,
+                   (_, 1) => 1,
+                   _ => 2,
+                 }"
+            )
+            .to_string(),
+            "match# a_0 {
+(a_1, a_2) => match# a_1 {
+1 => 0 [a_2],
+_ => match# a_2 {
+1 => 1 [a_1],
+_ => 2 [a_0]}}}"
         );
         assert_eq!(
-            compile_match("match t { (x, y, 1) => x, (x, y, 2) => y, (_, _, 3) => \"default\" }")
-                .to_string(),
-            "match# a_0 {\n(a_1, a_2, a_3) => match# a_3 {\n1 => 0 [a_1, a_2],\n_ => match# a_3 {\n2 => 1 [a_1, a_2],\n_ => match# a_3 {\n3 => 2 [a_1, a_2],\n_ => ERR}}}}"
+            compile_match(
+                "match t {
+                   (x, y, 1) => x,
+                   (x, y, 2) => y,
+                   (_, _, 3) => \"default\"
+                 }"
+            )
+            .to_string(),
+            "match# a_0 {
+(a_1, a_2, a_3) => match# a_3 {
+1 => 0 [a_1, a_2],
+_ => match# a_3 {
+2 => 1 [a_1, a_2],
+_ => match# a_3 {
+3 => 2 [a_1, a_2],
+_ => ERR}}}}"
+        );
+        assert_eq!(
+            compile_match(
+                "type List t = Nil | Cons t (List t);
+                 match t {
+                   List::Nil => 0,
+                   List::Cons 1 _ => 1,
+                 }"
+            )
+            .to_string(),
+            "match# a_0 {
+T_0::[0] => 0 [],
+_ => match# a_0 {
+T_0::[1] a_1 a_2 => match# a_1 {
+1 => 1 [a_2],
+_ => ERR}}}"
+        );
+        // every constructor covered, so the last test has no alternate
+        assert_eq!(
+            compile_match(
+                "type List t = Nil | Cons t (List t);
+                 match t {
+                   List::Nil => 0,
+                   List::Cons x xs => x 
+                 }"
+            )
+            .to_string(),
+            "match# a_0 {
+T_0::[0] => 0 [],
+_ => match# a_0 {
+T_0::[1] a_1 a_2 => 1 [a_1, a_2]}}"
+        );
+        assert_eq!(
+            compile_match(
+                "type List t = Nil | Cons t (List t);
+                 match t {
+                   List::Cons a (List::Cons b _) => a - b,
+                   List::Cons a _ => a,
+                   List::Nil => 0,
+                 }"
+            )
+            .to_string(),
+            "match# a_0 {
+T_0::[1] a_1 a_2 => match# a_2 {
+T_0::[1] a_3 a_4 => 0 [a_1, a_3, a_4],
+_ => 1 [a_1, a_2]},
+_ => match# a_0 {
+T_0::[0] => 2 []}}"
+        );
+        assert_eq!(
+            compile_match(
+                "type Option a = None | Some a;
+                 match t {
+                   (Option::Some a, b) => a - b,
+                   (Option::None, c) => c
+                 }"
+            )
+            .to_string(),
+            "match# a_0 {
+(a_1, a_2) => match# a_1 {
+T_0::[1] a_3 => 0 [a_3, a_2],
+_ => match# a_1 {
+T_0::[0] => 1 [a_2]}}}"
         );
     }
 }

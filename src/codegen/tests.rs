@@ -26,7 +26,11 @@ static RUNTIME_LOCK: Mutex<()> = Mutex::new(());
 fn run(source: &str) -> i64 {
     // validate and run inkwell JIT
     let (program, types) = front_end(source);
-    let trees = patternmatch::check_patterns(&program, source, false).unwrap();
+    let constructor_counts = types
+        .iter()
+        .map(|d| d.constructors.len())
+        .collect::<Vec<_>>();
+    let trees = patternmatch::check_patterns(&program, source, false, &constructor_counts).unwrap();
     let context = Context::create();
     let mut compiler = Compiler::new(&context, "test", trees, types).unwrap();
     compiler

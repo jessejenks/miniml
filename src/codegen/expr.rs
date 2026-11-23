@@ -207,6 +207,7 @@ impl<'ctx> Compiler<'ctx> {
                 self.builder.position_at_end(alternate_block);
                 self.compile_tree(alternate, vars, arm_blocks)
             }
+            Tree::Branch(_, _) => todo!(),
         }
     }
 
