@@ -72,6 +72,7 @@ pub enum PatternKind<'a> {
     Wild,
     Variable(&'a str),
     Tuple(Vec<Pattern<'a>>),
+    Constructor(Path<'a>, Vec<Pattern<'a>>),
 }
 
 impl Display for PatternKind<'_> {
@@ -89,6 +90,16 @@ impl Display for PatternKind<'_> {
                     write!(f, "{p}")?;
                 }
                 write!(f, ")")
+            }
+            Self::Constructor(path, patterns) => {
+                path.fmt(f)?;
+                for p in patterns {
+                    match &p.kind {
+                        Self::Constructor(_, args) if !args.is_empty() => write!(f, " ({p})")?,
+                        _ => write!(f, " {p}")?,
+                    }
+                }
+                Ok(())
             }
         }
     }

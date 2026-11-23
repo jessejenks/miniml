@@ -636,7 +636,58 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    fn starts_pattern_atom(tok: &Token) -> bool {
+        matches!(
+            tok,
+            Token::Unit
+                | Token::Bool(_)
+                | Token::Char(_)
+                | Token::Int(_)
+                | Token::String(_)
+                | Token::Underscore
+                | Token::Identifier(_)
+                | Token::LParen
+        )
+    }
+
     fn pattern(&mut self) -> Result<surface::Pattern<'a>, ParseError> {
+        if let Some((start, Token::Identifier(name), end)) = self.peek()? {
+            self.next()?;
+            return self.name_pattern(name, start, end, true);
+        }
+        self.pattern_atom()
+    }
+
+    fn name_pattern(
+        &mut self,
+        name: &'a str,
+        start: usize,
+        end: usize,
+        with_args: bool,
+    ) -> Result<surface::Pattern<'a>, ParseError> {
+        let (path, mut end) = self.qualified_name(name, start, end)?;
+        if path.qualifiers.is_empty() {
+            return Ok(surface::Pattern {
+                kind: surface::PatternKind::Variable(name),
+                span: (start..end).into(),
+            });
+        }
+        let mut args = Vec::new();
+        while with_args
+            && let Some((_, tok, _)) = self.peek()?
+            && Self::starts_pattern_atom(&tok)
+        {
+            let arg = self.pattern_atom()?;
+            end = arg.span.end;
+            args.push(arg);
+        }
+        Ok(surface::Pattern {
+            kind: surface::PatternKind::Constructor(path, args),
+            span: (start..end).into(),
+        })
+    }
+
+    fn pattern_atom(&mut self) -> Result<surface::Pattern<'a>, ParseError> {
         match self.next()? {
             Some((start, Token::Unit, end)) => Ok(surface::Pattern {
                 kind: surface::PatternKind::Literal(surface::Literal::Unit),
@@ -662,13 +713,17 @@ impl<'a> Parser<'a> {
                 kind: surface::PatternKind::Wild,
                 span: (start..end).into(),
             }),
-            Some((start, Token::Identifier(x), end)) => Ok(surface::Pattern {
-                kind: surface::PatternKind::Variable(x),
-                span: (start..end).into(),
-            }),
+            Some((start, Token::Identifier(name), end)) => {
+                self.name_pattern(name, start, end, false)
+            }
             Some((start, Token::LParen, _)) => {
-                let mut elements = vec![self.pattern()?];
+                let pat = self.pattern()?;
+                if let Some((_, Token::RParen, _)) = self.peek()? {
+                    self.next()?;
+                    return Ok(pat);
+                }
                 self.expect(Token::Comma)?;
+                let mut elements = vec![pat];
                 elements.push(self.pattern()?);
                 while self.chomp_if_next_is(Token::Comma)? {
                     elements.push(self.pattern()?);
@@ -1025,6 +1080,30 @@ mod tests {
         assert_eq!(
             parse("match x { ((), (1, ()), ()) => 2 }").to_string(),
             "(match x { ((), (1, ()), ()) => 2 })"
+        );
+        assert_eq!(
+            parse("match x { List::Nil => 1, List::Cons y z => foo z }").to_string(),
+            "(match x { List::Nil => 1, List::Cons y z => (foo z) })"
+        );
+        assert_eq!(
+            parse("match x { List::Nil => 1, List::Cons y (List::Cons z _) => foo z }").to_string(),
+            "(match x { List::Nil => 1, List::Cons y (List::Cons z _) => (foo z) })"
+        );
+        assert_eq!(
+            parse("match x { ((), Foo::Bar a b, c) => 1 }").to_string(),
+            "(match x { ((), Foo::Bar a b, c) => 1 })"
+        );
+        assert_eq!(
+            parse("match x { Pair::Pair Option::None y => 1 }").to_string(),
+            "(match x { Pair::Pair Option::None y => 1 })"
+        );
+        assert_eq!(
+            parse("match x { Pair::Pair (Option::Some y) (z) => 1 }").to_string(),
+            "(match x { Pair::Pair (Option::Some y) z => 1 })"
+        );
+        assert_eq!(
+            parse("let (x) = 1; x").to_string(),
+            parse("let x = 1; x").to_string()
         );
     }
 

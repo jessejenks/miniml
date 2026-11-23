@@ -461,6 +461,7 @@ fn push_scope<'a>(
             }
             (count, ast::PatternKind::Tuple(pats))
         }
+        surface::PatternKind::Constructor(_, _) => todo!(),
     };
     Ok((
         count,
