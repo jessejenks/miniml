@@ -30,6 +30,12 @@ pub enum ElaborationError {
         #[label("cannot include literals here")]
         span: SourceSpan,
     },
+    #[error("this pattern cannot contain constructors")]
+    #[diagnostic(code(elaborator::pattern_contains_constructors))]
+    PatternContainsConstructors {
+        #[label("cannot include constructors here")]
+        span: SourceSpan,
+    },
     #[error("{name} is declared multiple times")]
     #[diagnostic(code(elaborator::duplicate_declaration))]
     DuplicateDeclaration {
@@ -58,13 +64,22 @@ pub enum ElaborationError {
         #[label("max 247 constructors allowed per type")]
         span: SourceSpan,
     },
-    #[error("{name} expects {expected} type arguments, but got {actual}")]
+    #[error("{name} expects {expected} type argument(s), but got {actual}")]
     #[diagnostic(code(elaborator::wrong_type_arity))]
     WrongTypeArity {
         name: String,
         expected: usize,
         actual: usize,
         #[label("wrong number of type arguments")]
+        span: SourceSpan,
+    },
+    #[error("{name} expects {expected} argument(s), but got {actual}")]
+    #[diagnostic(code(elaborator::wrong_constructor_arity))]
+    WrongConstructorArity {
+        name: String,
+        expected: usize,
+        actual: usize,
+        #[label("wrong number of arguments")]
         span: SourceSpan,
     },
 }
@@ -184,6 +199,23 @@ fn unknown_constructor_error(path: &surface::Path) -> ElaborationError {
     }
 }
 
+/// Returns (type id, constructor index, field count)
+fn resolve_constructor(
+    constructors: &Constructors,
+    path: &surface::Path,
+) -> Result<(TypeId, usize, usize), ElaborationError> {
+    let [type_name] = path.qualifiers.as_slice() else {
+        return Err(unknown_type_error(path));
+    };
+    let Some((id, ctors)) = constructors.get(type_name.name) else {
+        return Err(unknown_type_error(path));
+    };
+    let Some(&(index, field_count)) = ctors.get(path.name.name) else {
+        return Err(unknown_constructor_error(path));
+    };
+    Ok((*id, index, field_count))
+}
+
 fn elaborate_type(
     types: &HashMap<&str, TypeName>,
     params: &[surface::Identifier],
@@ -246,15 +278,7 @@ fn surface_to_core_inner<'a>(
             None => ast::ExprKind::FreeVariable(x.to_string()),
         },
         surface::ExprKind::Path(p) => {
-            let [type_name] = p.qualifiers.as_slice() else {
-                return Err(unknown_type_error(&p));
-            };
-            let Some((id, ctors)) = constructors.get(type_name.name) else {
-                return Err(unknown_type_error(&p));
-            };
-            let Some(&(index, field_count)) = ctors.get(p.name.name) else {
-                return Err(unknown_constructor_error(&p));
-            };
+            let (id, index, field_count) = resolve_constructor(constructors, &p)?;
             // eta-expand
             let args = (0..field_count)
                 .rev()
@@ -263,7 +287,7 @@ fn surface_to_core_inner<'a>(
                     span: expr.span,
                 })
                 .collect();
-            let mut kind = ast::ExprKind::Constructor(*id, index, args);
+            let mut kind = ast::ExprKind::Constructor(id, index, args);
             for _ in 0..field_count {
                 kind = ast::ExprKind::Abstraction(
                     None,
@@ -303,7 +327,7 @@ fn surface_to_core_inner<'a>(
         }
         surface::ExprKind::LetIn(is_rec, x, expr, body) => {
             if is_rec {
-                let (_, pattern) = push_scope(true, true, 0, scope, &x)?;
+                let (_, pattern) = push_scope(true, true, 0, scope, &x, constructors)?;
                 let e = surface_to_core_inner(scope, *expr, constructors)?;
                 let b = surface_to_core_inner(scope, *body, constructors)?;
                 scope.pop();
@@ -311,7 +335,7 @@ fn surface_to_core_inner<'a>(
             } else {
                 let e = surface_to_core_inner(scope, *expr, constructors)?;
                 let start = scope.len();
-                let (pop_count, pattern) = push_scope(false, true, start, scope, &x)?;
+                let (pop_count, pattern) = push_scope(false, true, start, scope, &x, constructors)?;
                 let b = surface_to_core_inner(scope, *body, constructors)?;
                 for _ in 0..pop_count {
                     scope.pop();
@@ -382,7 +406,8 @@ fn surface_to_core_inner<'a>(
             }
             let mut elaborated_cases = Vec::new();
             for (p, e) in arms {
-                let (pop_count, pattern) = push_scope(false, false, scope.len(), scope, &p)?;
+                let (pop_count, pattern) =
+                    push_scope(false, false, scope.len(), scope, &p, constructors)?;
                 let expr = surface_to_core_inner(scope, e, constructors)?;
                 for _ in 0..pop_count {
                     scope.pop();
@@ -422,6 +447,7 @@ fn push_scope<'a>(
     start: usize,
     scope: &mut Vec<&'a str>,
     pattern: &surface::Pattern<'a>,
+    constructors: &Constructors<'a>,
 ) -> Result<(usize, ast::Pattern), ElaborationError> {
     let (count, kind) = match &pattern.kind {
         surface::PatternKind::Literal(lit) => {
@@ -455,13 +481,36 @@ fn push_scope<'a>(
             let mut count = 0;
             let mut pats = Vec::new();
             for p in patterns {
-                let (c, pat) = push_scope(false, is_let, start, scope, p)?;
+                let (c, pat) = push_scope(false, is_let, start, scope, p, constructors)?;
                 count += c;
                 pats.push(pat);
             }
             (count, ast::PatternKind::Tuple(pats))
         }
-        surface::PatternKind::Constructor(_, _) => todo!(),
+        surface::PatternKind::Constructor(p, patterns) => {
+            if is_let {
+                return Err(ElaborationError::PatternContainsConstructors {
+                    span: pattern.span.into(),
+                });
+            }
+            let (id, index, field_count) = resolve_constructor(constructors, p)?;
+            if patterns.len() != field_count {
+                return Err(ElaborationError::WrongConstructorArity {
+                    name: p.to_string(),
+                    expected: field_count,
+                    actual: patterns.len(),
+                    span: pattern.span.into(),
+                });
+            }
+            let mut count = 0;
+            let mut pats = Vec::new();
+            for p in patterns {
+                let (c, pat) = push_scope(false, is_let, start, scope, p, constructors)?;
+                count += c;
+                pats.push(pat);
+            }
+            (count, ast::PatternKind::Constructor(id, index, pats))
+        }
     };
     Ok((
         count,
@@ -596,6 +645,12 @@ mod tests {
         elaborate(Parser::parse(source).unwrap().0, &[]).unwrap().0
     }
 
+    fn elab_with_types(source: &str, types: &str) -> Result<ast::Expr, ElaborationError> {
+        let source = format!("{types} {source}");
+        let (program, decls) = Parser::parse(&source).unwrap();
+        Ok(elaborate(program, &decls)?.0)
+    }
+
     #[test]
     fn elaborates_expressions() {
         assert_eq!(elab("()").to_string(), "()");
@@ -632,18 +687,46 @@ mod tests {
             elab("let (a, _, b, _, c) = (1, 2, 3, 4, 5); a + b + c").to_string(),
             "(let (1, 2, 3, 4, 5) in (+ (+ #4 #2) #0))"
         );
-    }
 
-    fn elab_with_types(source: &str) -> Result<ast::Expr, ElaborationError> {
-        let types = "type Option a = None | Some a; type Pair = Pair Int Int;";
-        let source = format!("{types} {source}");
-        let (program, decls) = Parser::parse(&source).unwrap();
-        Ok(elaborate(program, &decls)?.0)
+        assert_eq!(
+            elab_with_types(
+                "match x { List::Nil => 1, List::Cons y z => foo z }",
+                "type List t = Nil | Cons t (List t);"
+            )
+            .unwrap()
+            .to_string(),
+            "(match x { T_0::[0] => 1, T_0::[1] v v => (foo #0) })"
+        );
+        assert_eq!(
+            elab_with_types(
+                "match x { List::Nil => 1, List::Cons y (List::Cons z _) => foo z }",
+                "type List t = Nil | Cons t (List t);"
+            )
+            .unwrap()
+            .to_string(),
+            "(match x { T_0::[0] => 1, T_0::[1] v (T_0::[1] v _) => (foo #1) })"
+        );
+        assert_eq!(
+            elab_with_types(
+                "match x { ((), Foo::Bar a b, c) => a + b + c }",
+                "type Foo a b = Bar a b;"
+            )
+            .unwrap()
+            .to_string(),
+            "(match x { ((), T_0::[0] v v, v) => (+ (+ #2 #1) #0) })"
+        );
     }
 
     #[test]
     fn elaborates_constructors() {
-        let elab = |source| elab_with_types(source).unwrap().to_string();
+        let elab = |source| {
+            elab_with_types(
+                source,
+                "type Option a = None | Some a; type Pair = Pair Int Int;",
+            )
+            .unwrap()
+            .to_string()
+        };
         assert_eq!(elab("Option::None"), "T_0::[0]");
         assert_eq!(elab("Option::Some"), "(λ.T_0::[1](#0))");
         assert_eq!(elab("Option::Some 1"), "((λ.T_0::[1](#0)) 1)");
@@ -654,14 +737,20 @@ mod tests {
         for source in ["Foo::Bar", "Int::Zero", "Option::Option::None"] {
             assert!(
                 matches!(
-                    elab_with_types(source),
+                    elab_with_types(
+                        source,
+                        "type Option a = None | Some a; type Pair = Pair Int Int;"
+                    ),
                     Err(ElaborationError::UnknownType { .. })
                 ),
                 "{source}"
             );
         }
         assert!(matches!(
-            elab_with_types("Option::Nothing"),
+            elab_with_types(
+                "Option::Nothing",
+                "type Option a = None | Some a; type Pair = Pair Int Int;"
+            ),
             Err(ElaborationError::UnknownConstructor { .. })
         ));
     }
@@ -686,5 +775,33 @@ mod tests {
             elaborate(Parser::parse("let 1 = f x; ()").unwrap().0, &[]),
             Err(ElaborationError::PatternContainsLiterals { .. })
         ));
+
+        let types = "type Option a = None | Some a;";
+        for source in [
+            "let Option::Some x = Option::Some 1; x",
+            "let (Option::Some x, y) = (Option::Some 1, 2); x",
+            "let rec Option::Some x = Option::Some 1; x",
+        ] {
+            assert!(
+                matches!(
+                    elab_with_types(source, types),
+                    Err(ElaborationError::PatternContainsConstructors { .. })
+                ),
+                "{source}"
+            );
+        }
+        for source in [
+            "match Option::None { Option::Some => 1, _ => 2 }",
+            "match Option::None { Option::Some x y => 1, _ => 2 }",
+            "match Option::None { Option::None x => 1, _ => 2 }",
+        ] {
+            assert!(
+                matches!(
+                    elab_with_types(source, types),
+                    Err(ElaborationError::WrongConstructorArity { .. })
+                ),
+                "{source}"
+            );
+        }
     }
 }

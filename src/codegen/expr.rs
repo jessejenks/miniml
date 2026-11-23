@@ -272,6 +272,7 @@ impl<'ctx> Compiler<'ctx> {
                 }
                 Ok(count)
             }
+            ast::PatternKind::Constructor(_, _, _) => todo!(),
         }
     }
 

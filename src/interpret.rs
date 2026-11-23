@@ -149,6 +149,7 @@ fn to_spanless_pattern(pattern: &ast::Pattern) -> Pattern {
         ast::PatternKind::Tuple(patterns) => {
             Pattern::Tuple(patterns.iter().map(to_spanless_pattern).collect())
         }
+        ast::PatternKind::Constructor(_, _, _) => todo!(),
     }
 }
 

@@ -217,7 +217,7 @@ impl<'a> Parser<'a> {
             Some((let_start, Token::Keyword(Keyword::Let), _)) => {
                 self.next()?;
                 let is_recursive = self.chomp_if_next_is(Token::Keyword(Keyword::Rec))?;
-                let pattern = self.pattern()?;
+                let (pattern, _) = self.pattern()?;
                 self.expect(Token::Equal)?;
                 let expr = self.expression(0)?;
                 let body_start = if let Some((_, Token::RBrace, brace_end)) = self.prev_token {
@@ -623,7 +623,7 @@ impl<'a> Parser<'a> {
     fn let_in(&mut self, start: usize) -> Result<surface::Expr<'a>, ParseError> {
         // already read `let`
         let is_recursive = self.chomp_if_next_is(Token::Keyword(Keyword::Rec))?;
-        let pattern = self.pattern()?;
+        let (pattern, _) = self.pattern()?;
         self.expect(Token::Equal)?;
         let expr = self.expression(0)?;
         self.expect(Token::Semi)?;
@@ -650,7 +650,7 @@ impl<'a> Parser<'a> {
         )
     }
 
-    fn pattern(&mut self) -> Result<surface::Pattern<'a>, ParseError> {
+    fn pattern(&mut self) -> Result<(surface::Pattern<'a>, usize), ParseError> {
         if let Some((start, Token::Identifier(name), end)) = self.peek()? {
             self.next()?;
             return self.name_pattern(name, start, end, true);
@@ -664,75 +664,102 @@ impl<'a> Parser<'a> {
         start: usize,
         end: usize,
         with_args: bool,
-    ) -> Result<surface::Pattern<'a>, ParseError> {
+    ) -> Result<(surface::Pattern<'a>, usize), ParseError> {
         let (path, mut end) = self.qualified_name(name, start, end)?;
         if path.qualifiers.is_empty() {
-            return Ok(surface::Pattern {
-                kind: surface::PatternKind::Variable(name),
-                span: (start..end).into(),
-            });
+            return Ok((
+                surface::Pattern {
+                    kind: surface::PatternKind::Variable(name),
+                    span: (start..end).into(),
+                },
+                end,
+            ));
         }
         let mut args = Vec::new();
         while with_args
             && let Some((_, tok, _)) = self.peek()?
             && Self::starts_pattern_atom(&tok)
         {
-            let arg = self.pattern_atom()?;
-            end = arg.span.end;
+            let (arg, new_end) = self.pattern_atom()?;
+            end = new_end;
             args.push(arg);
         }
-        Ok(surface::Pattern {
-            kind: surface::PatternKind::Constructor(path, args),
-            span: (start..end).into(),
-        })
+        Ok((
+            surface::Pattern {
+                kind: surface::PatternKind::Constructor(path, args),
+                span: (start..end).into(),
+            },
+            end,
+        ))
     }
 
-    fn pattern_atom(&mut self) -> Result<surface::Pattern<'a>, ParseError> {
+    fn pattern_atom(&mut self) -> Result<(surface::Pattern<'a>, usize), ParseError> {
         match self.next()? {
-            Some((start, Token::Unit, end)) => Ok(surface::Pattern {
-                kind: surface::PatternKind::Literal(surface::Literal::Unit),
-                span: (start..end).into(),
-            }),
-            Some((start, Token::Bool(b), end)) => Ok(surface::Pattern {
-                kind: surface::PatternKind::Literal(surface::Literal::Bool(b)),
-                span: (start..end).into(),
-            }),
-            Some((start, Token::Char(c), end)) => Ok(surface::Pattern {
-                kind: surface::PatternKind::Literal(surface::Literal::Char(c)),
-                span: (start..end).into(),
-            }),
-            Some((start, Token::Int(n), end)) => Ok(surface::Pattern {
-                kind: surface::PatternKind::Literal(surface::Literal::Int(n)),
-                span: (start..end).into(),
-            }),
-            Some((start, Token::String(s), end)) => Ok(surface::Pattern {
-                kind: surface::PatternKind::Literal(surface::Literal::String(s)),
-                span: (start..end).into(),
-            }),
-            Some((start, Token::Underscore, end)) => Ok(surface::Pattern {
-                kind: surface::PatternKind::Wild,
-                span: (start..end).into(),
-            }),
+            Some((start, Token::Unit, end)) => Ok((
+                surface::Pattern {
+                    kind: surface::PatternKind::Literal(surface::Literal::Unit),
+                    span: (start..end).into(),
+                },
+                end,
+            )),
+            Some((start, Token::Bool(b), end)) => Ok((
+                surface::Pattern {
+                    kind: surface::PatternKind::Literal(surface::Literal::Bool(b)),
+                    span: (start..end).into(),
+                },
+                end,
+            )),
+            Some((start, Token::Char(c), end)) => Ok((
+                surface::Pattern {
+                    kind: surface::PatternKind::Literal(surface::Literal::Char(c)),
+                    span: (start..end).into(),
+                },
+                end,
+            )),
+            Some((start, Token::Int(n), end)) => Ok((
+                surface::Pattern {
+                    kind: surface::PatternKind::Literal(surface::Literal::Int(n)),
+                    span: (start..end).into(),
+                },
+                end,
+            )),
+            Some((start, Token::String(s), end)) => Ok((
+                surface::Pattern {
+                    kind: surface::PatternKind::Literal(surface::Literal::String(s)),
+                    span: (start..end).into(),
+                },
+                end,
+            )),
+            Some((start, Token::Underscore, end)) => Ok((
+                surface::Pattern {
+                    kind: surface::PatternKind::Wild,
+                    span: (start..end).into(),
+                },
+                end,
+            )),
             Some((start, Token::Identifier(name), end)) => {
                 self.name_pattern(name, start, end, false)
             }
             Some((start, Token::LParen, _)) => {
                 let pat = self.pattern()?;
-                if let Some((_, Token::RParen, _)) = self.peek()? {
+                if let Some((_, Token::RParen, end)) = self.peek()? {
                     self.next()?;
-                    return Ok(pat);
+                    return Ok((pat.0, end));
                 }
                 self.expect(Token::Comma)?;
-                let mut elements = vec![pat];
-                elements.push(self.pattern()?);
+                let mut elements = vec![pat.0];
+                elements.push(self.pattern()?.0);
                 while self.chomp_if_next_is(Token::Comma)? {
-                    elements.push(self.pattern()?);
+                    elements.push(self.pattern()?.0);
                 }
                 let (_, _, end) = self.expect(Token::RParen)?;
-                Ok(surface::Pattern {
-                    kind: surface::PatternKind::Tuple(elements),
-                    span: (start..end).into(),
-                })
+                Ok((
+                    surface::Pattern {
+                        kind: surface::PatternKind::Tuple(elements),
+                        span: (start..end).into(),
+                    },
+                    end,
+                ))
             }
             Some((start, tok, end)) => Err(ParseError::UnexpectedTokenExpecting {
                 actual: format!("{tok:?}"),
@@ -782,7 +809,7 @@ impl<'a> Parser<'a> {
         self.expect(Token::LBrace)?;
         let mut arms = Vec::new();
         loop {
-            let pat = self.pattern()?;
+            let (pat, _) = self.pattern()?;
             self.expect(Token::WideArrow)?;
             let expr = self.expression(0)?;
             arms.push((pat, expr));

@@ -115,6 +115,7 @@ pub enum PatternKind {
     Wild,
     Variable,
     Tuple(Vec<Pattern>),
+    Constructor(typecheck::TypeId, usize, Vec<Pattern>),
 }
 
 impl Display for PatternKind {
@@ -132,6 +133,16 @@ impl Display for PatternKind {
                     write!(f, "{p}")?;
                 }
                 write!(f, ")")
+            }
+            Self::Constructor(id, index, patterns) => {
+                write!(f, "T_{}::[{index}]", id.0)?;
+                for p in patterns {
+                    match &p.kind {
+                        Self::Constructor(_, _, args) if !args.is_empty() => write!(f, " ({p})")?,
+                        _ => write!(f, " {p}")?,
+                    }
+                }
+                Ok(())
             }
         }
     }

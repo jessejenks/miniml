@@ -202,7 +202,7 @@ fn collect_spans(spans: &mut Vec<ast::Span>, pattern: &ast::Pattern) {
         ast::PatternKind::Variable => {
             spans.push(pattern.span);
         }
-        ast::PatternKind::Tuple(patterns) => {
+        ast::PatternKind::Tuple(patterns) | ast::PatternKind::Constructor(_, _, patterns) => {
             for p in patterns {
                 collect_spans(spans, p);
             }

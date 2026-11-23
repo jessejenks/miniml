@@ -272,6 +272,7 @@ fn number_binders(pattern: &ast::Pattern, first: Binder) -> (Pattern, Binder) {
             }
             (Pattern::Tuple(numbered), next)
         }
+        ast::PatternKind::Constructor(_, _, _) => todo!(),
     }
 }
 
@@ -584,6 +585,7 @@ fn collect_binder_spans(spans: &mut Vec<ast::Span>, pattern: &ast::Pattern) {
                 collect_binder_spans(spans, p);
             }
         }
+        ast::PatternKind::Constructor(_, _, _) => todo!(),
     }
 }
 

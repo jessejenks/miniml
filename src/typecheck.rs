@@ -429,6 +429,7 @@ impl TypeChecker {
                     span: pattern.span.into(),
                 });
             }
+            ast::PatternKind::Constructor(_, _, _) => todo!(),
         }
         self.context.push(t_prime_gen);
         let t = self.algorithm_j(body)?;
@@ -625,6 +626,7 @@ impl TypeChecker {
                 }
                 Ok(())
             }
+            (ast::PatternKind::Constructor(_, _, _), _) => todo!(),
         }
     }
 
