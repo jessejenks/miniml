@@ -490,24 +490,7 @@ impl<'ctx> Compiler<'ctx> {
         self.builder.build_unconditional_branch(dispatch)?;
 
         self.builder.position_at_end(pointer);
-        let ptr = self
-            .builder
-            .build_int_to_ptr(value, self.ptr_type, "cons")?;
-        let header = unsafe {
-            self.builder.build_gep(
-                self.word,
-                ptr,
-                &[self.word.const_int((-1i64).cast_unsigned(), true)], // p[-1] to get header
-                "header.ptr",
-            )?
-        };
-        let header = self
-            .builder
-            .build_load(self.word, header, "header")?
-            .into_int_value();
-        let tag = self
-            .builder
-            .build_and(header, self.word.const_int(255, false), "tag")?;
+        let tag = self.load_tag(value)?;
         self.builder.build_unconditional_branch(dispatch)?;
 
         // index = phi <immediate> <object>

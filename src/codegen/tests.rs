@@ -240,6 +240,52 @@ fn compiles_expressions() {
            | Cons t (List t);
          if List::Cons 1 List::Nil == List::Nil then 1 else 2",
     );
+    // constructor patterns
+    let list = "type List t = Nil | Cons t (List t);";
+    let option = "type Option t = None | Some t;";
+    agrees(&format!(
+        "{list}
+         let rec sum = match {{ List::Nil => 0, List::Cons x xs => x + sum xs }};
+         sum (List::Cons 1 (List::Cons 2 (List::Cons 3 List::Nil)))"
+    ));
+    agrees(&format!(
+        "{list}
+         let f = match {{
+           List::Cons a (List::Cons b _) => a - b,
+           List::Cons a _ => a,
+           List::Nil => 0,
+         }};
+         f (List::Cons 10 (List::Cons 3 List::Nil)) * 100
+           + f (List::Cons 7 List::Nil) * 10
+           + f List::Nil"
+    ));
+    // test a constructor with fields against one without, and the reverse
+    agrees(&format!(
+        "{option}
+         let f = match {{ Option::Some x => x, _ => 9 }};
+         let g = match {{ Option::None => 9, _ => 1 }};
+         f Option::None * 1000 + f (Option::Some 5) * 100 + g Option::None * 10 + g (Option::Some 5)"
+    ));
+    agrees(&format!(
+        "{option}
+         let k = 100;
+         let f = match {{ (Option::Some a, b) => (a - b) * k, (Option::None, c) => c }};
+         f (Option::Some 1, 2) + f (Option::None, 7)"
+    ));
+    agrees(
+        "type Color = Red | Green | Blue;
+         let f = match { Color::Red => 1, Color::Green => 2, Color::Blue => 3 };
+         f Color::Red * 100 + f Color::Green * 10 + f Color::Blue",
+    );
+    agrees(
+        "type Shape = Circle Int | Rect Int Int | Tri Int Int Int;
+         let area = match {
+           Shape::Circle r => 3 * r * r,
+           Shape::Rect w h => w * h,
+           Shape::Tri a b c => a + b + c,
+         };
+         area (Shape::Circle 2) + area (Shape::Rect 3 4) + area (Shape::Tri 1 2 3)",
+    );
 }
 
 #[test]

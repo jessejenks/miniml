@@ -207,7 +207,69 @@ impl<'ctx> Compiler<'ctx> {
                 self.builder.position_at_end(alternate_block);
                 self.compile_tree(alternate, vars, arm_blocks)
             }
-            Tree::Branch(_, _) => todo!(),
+            Tree::Branch(var, Branch::Constructor(_, _, fields, matched, None)) => {
+                let value = vars[var];
+                for (i, field) in fields.iter().enumerate() {
+                    let field_value = self.load_field(value, i)?;
+                    vars.insert(*field, field_value);
+                }
+                self.compile_tree(matched, vars, arm_blocks)
+            }
+            Tree::Branch(var, Branch::Constructor(_, index, fields, matched, Some(alternate))) => {
+                let value = vars[var];
+                let matched_block = self.new_block("match.then");
+                let alternate_block = self.new_block("match.else");
+                if fields.is_empty() {
+                    let expected = self.word.const_int(((*index as u64) << 1) | 1, false);
+                    let is_match = self.builder.build_int_compare(
+                        IntPredicate::EQ,
+                        value,
+                        expected,
+                        "ctor.eq",
+                    )?;
+                    self.builder.build_conditional_branch(
+                        is_match,
+                        matched_block,
+                        alternate_block,
+                    )?;
+                } else {
+                    let one = self.word.const_int(1, false);
+                    let low_bit = self.builder.build_and(value, one, "low_bit")?;
+                    let is_pointer = self.builder.build_int_compare(
+                        IntPredicate::EQ,
+                        low_bit,
+                        self.word.const_zero(),
+                        "is_pointer",
+                    )?;
+                    let tag_block = self.new_block("match.tag");
+                    self.builder.build_conditional_branch(
+                        is_pointer,
+                        tag_block,
+                        alternate_block,
+                    )?;
+                    self.builder.position_at_end(tag_block);
+                    let tag = self.load_tag(value)?;
+                    let is_match = self.builder.build_int_compare(
+                        IntPredicate::EQ,
+                        tag,
+                        self.word.const_int(*index as u64, false),
+                        "tag.eq",
+                    )?;
+                    self.builder.build_conditional_branch(
+                        is_match,
+                        matched_block,
+                        alternate_block,
+                    )?;
+                }
+                self.builder.position_at_end(matched_block);
+                for (i, field) in fields.iter().enumerate() {
+                    let field_value = self.load_field(value, i)?;
+                    vars.insert(*field, field_value);
+                }
+                self.compile_tree(matched, vars, arm_blocks)?;
+                self.builder.position_at_end(alternate_block);
+                self.compile_tree(alternate, vars, arm_blocks)
+            }
         }
     }
 
@@ -256,6 +318,28 @@ impl<'ctx> Compiler<'ctx> {
             .builder
             .build_load(self.word, field, "field")?
             .into_int_value())
+    }
+
+    /// Only valid for a pointer, not an immediate
+    pub(super) fn load_tag(&self, value: IntValue<'ctx>) -> Result<IntValue<'ctx>> {
+        let ptr = self
+            .builder
+            .build_int_to_ptr(value, self.ptr_type, "cons")?;
+        let header = unsafe {
+            self.builder.build_gep(
+                self.word,
+                ptr,
+                &[self.word.const_int((-1i64).cast_unsigned(), true)], // p[-1] to get header
+                "header.ptr",
+            )?
+        };
+        let header = self
+            .builder
+            .build_load(self.word, header, "header")?
+            .into_int_value();
+        Ok(self
+            .builder
+            .build_and(header, self.word.const_int(255, false), "tag")?)
     }
 
     fn bind_pattern(&mut self, pattern: &ast::Pattern, value: IntValue<'ctx>) -> Result<usize> {
