@@ -209,6 +209,12 @@ pub enum TypeError {
         #[label("cannot include literals here")]
         span: SourceSpan,
     },
+    #[error("this pattern cannot contain constructors")]
+    #[diagnostic(code(typecheck::pattern_contains_constructors))]
+    PatternContainsConstructors {
+        #[label("cannot include constructors here")]
+        span: SourceSpan,
+    },
     #[error("arms of match must have same type")]
     #[diagnostic(code(typecheck::match_arms))]
     MatchArms {
@@ -221,6 +227,14 @@ pub enum TypeError {
         id: usize,
         index: usize,
         #[label("could not find constructor")]
+        span: SourceSpan,
+    },
+    #[error("wrong arity for constructors")]
+    #[diagnostic(code(typecheck::wrong_constructor_arity))]
+    WrongConstructorArity {
+        expected: usize,
+        actual: usize,
+        #[label("wrong number of arguments")]
         span: SourceSpan,
     },
 }
@@ -429,7 +443,11 @@ impl TypeChecker {
                     span: pattern.span.into(),
                 });
             }
-            ast::PatternKind::Constructor(_, _, _) => todo!(),
+            ast::PatternKind::Constructor(_, _, _) => {
+                return Err(TypeError::PatternContainsConstructors {
+                    span: pattern.span.into(),
+                });
+            }
         }
         self.context.push(t_prime_gen);
         let t = self.algorithm_j(body)?;
@@ -557,16 +575,7 @@ impl TypeChecker {
         index: usize,
         args: &[ast::Expr],
     ) -> Result<TypeExpr> {
-        let scheme = self
-            .constructors
-            .get(id.0)
-            .and_then(|ctors| ctors.get(index))
-            .cloned()
-            .ok_or(TypeError::UnknownConstructor {
-                id: id.0,
-                index,
-                span: span.into(),
-            })?;
+        let scheme = self.get_constructor_scheme(span, id, index)?;
         let mut tp = self.instantiate(&scheme);
         for arg in args {
             // same as rule_app for each arg
@@ -626,8 +635,60 @@ impl TypeChecker {
                 }
                 Ok(())
             }
-            (ast::PatternKind::Constructor(_, _, _), _) => todo!(),
+            (ast::PatternKind::Constructor(id, index, patterns), t) => {
+                if is_let {
+                    return Err(TypeError::PatternContainsConstructors {
+                        span: pattern.span.into(),
+                    });
+                }
+                let mut tp =
+                    self.instantiate(&self.get_constructor_scheme(pattern.span, *id, *index)?);
+                let mut fields = Vec::new();
+                for _ in patterns {
+                    let TypeExpr::Arrow(field, rest) = tp else {
+                        // too few
+                        return Err(TypeError::WrongConstructorArity {
+                            expected: fields.len(),
+                            actual: patterns.len(),
+                            span: pattern.span.into(),
+                        });
+                    };
+                    fields.push(field);
+                    tp = (*rest).clone();
+                }
+                if let TypeExpr::Arrow(_, _) = tp {
+                    // too many
+                    let mut remaining = 0;
+                    let mut rest = &tp;
+                    while let TypeExpr::Arrow(_, next) = rest {
+                        remaining += 1;
+                        rest = next;
+                    }
+                    return Err(TypeError::WrongConstructorArity {
+                        expected: fields.len() + remaining,
+                        actual: patterns.len(),
+                        span: pattern.span.into(),
+                    });
+                }
+                self.unify(pattern.span, tp, t.clone())?;
+                for (p, field) in patterns.iter().zip(&fields) {
+                    self.unify_pattern(is_let, p, field, out)?;
+                }
+                Ok(())
+            }
         }
+    }
+
+    fn get_constructor_scheme(&self, span: ast::Span, id: TypeId, index: usize) -> Result<Scheme> {
+        self.constructors
+            .get(id.0)
+            .and_then(|ctors| ctors.get(index))
+            .cloned()
+            .ok_or(TypeError::UnknownConstructor {
+                id: id.0,
+                index,
+                span: span.into(),
+            })
     }
 
     fn new_unification_variable(&mut self, is_eq: bool) -> TypeExpr {
@@ -1043,31 +1104,6 @@ mod tests {
             check("let (f, n) = (fun x => x, 1); (f 1, f \"a\")").unwrap(),
             "(Int, String)"
         );
-        assert_eq!(check("match 1 { 1 => true, _ => false }").unwrap(), "Bool");
-        assert_eq!(
-            check(r#"match (1, "a") { (x, y) => y }"#).unwrap(),
-            "String"
-        );
-        assert_eq!(
-            check("match (1, 2) { (0, y) => y, (x, _) => x }").unwrap(),
-            "Int"
-        );
-        assert_eq!(check("match { 0 => 1, n => n * 2 }").unwrap(), "Int -> Int");
-        assert_eq!(check("fun x => match x { y => y }").unwrap(), "(∀α.α -> α)");
-        assert_eq!(
-            check("match { (x, y) => (y, x) }").unwrap(),
-            "(∀α.∀β.(α, β) -> (β, α))"
-        );
-        // pattern variable shadows the outer x
-        assert_eq!(
-            check(r#"let x = 1; match "a" { x => x }"#).unwrap(),
-            "String"
-        );
-        // arm bindings are popped afterwards
-        assert_eq!(
-            check(r#"let x = 1; (match "a" { y => y }, x)"#).unwrap(),
-            "(String, Int)"
-        );
     }
 
     #[test]
@@ -1149,6 +1185,69 @@ mod tests {
                 "{source}"
             );
         }
+    }
+
+    #[test]
+    fn pattern_matching() {
+        assert_eq!(check("match 1 { 1 => true, _ => false }").unwrap(), "Bool");
+        assert_eq!(
+            check(r#"match (1, "a") { (x, y) => y }"#).unwrap(),
+            "String"
+        );
+        assert_eq!(
+            check("match (1, 2) { (0, y) => y, (x, _) => x }").unwrap(),
+            "Int"
+        );
+        assert_eq!(check("match { 0 => 1, n => n * 2 }").unwrap(), "Int -> Int");
+        assert_eq!(check("fun x => match x { y => y }").unwrap(), "(∀α.α -> α)");
+        assert_eq!(
+            check("match { (x, y) => (y, x) }").unwrap(),
+            "(∀α.∀β.(α, β) -> (β, α))"
+        );
+        // pattern variable shadows the outer x
+        assert_eq!(
+            check(r#"let x = 1; match "a" { x => x }"#).unwrap(),
+            "String"
+        );
+        // arm bindings are popped afterwards
+        assert_eq!(
+            check(r#"let x = 1; (match "a" { y => y }, x)"#).unwrap(),
+            "(String, Int)"
+        );
+        assert_eq!(
+            check(
+                "type Either a b = Left a | Right b;
+                 match Either::Left 1 { Either::Left n => n }"
+            )
+            .unwrap(),
+            "Int"
+        );
+        assert_eq!(
+            check("type A a = A a; fun x => match x { A::A x => x }").unwrap(),
+            "(∀α.T_0 α -> α)"
+        );
+        assert_eq!(
+            check(
+                "type List t = Nil | Cons t (List t);
+                 fun x => match x {
+                    List::Cons a List::Nil => a,
+                    List::Cons a (List::Cons b List::Nil) => a + b,
+                    List::Cons a (List::Cons b (List::Cons c List::Nil)) => a + b + c,
+                 }"
+            )
+            .unwrap(),
+            "T_0 Int -> Int"
+        );
+        assert_eq!(
+            check(
+                "type List t = Nil | Cons t (List t);
+                 fun x => match x {
+                    List::Cons (a, b, c) (List::Cons (d, e, f) List::Nil) => a + e,
+                 }"
+            )
+            .unwrap(),
+            "(∀α.T_0 (Int, Int, α) -> Int)"
+        );
     }
 
     #[test]
@@ -1312,5 +1411,94 @@ mod tests {
             checker.generalize_at_level(tp, -1).to_string(),
             "(∀α.∀β.α -> T_0 α β)"
         );
+    }
+
+    #[test]
+    fn bad_patterns() {
+        assert!(matches!(
+            check(
+                "type Option a = None | Some a;
+                 type List t = Nil | Cons t (List t);
+                 match Option::Some 1 { List::Cons x _ => x, _ => 0 }"
+            ),
+            Err(TypeError::Unification { .. })
+        ));
+
+        // the elaborator rejects the rest, so build them directly
+        let mut checker = TypeChecker::new();
+        checker.add_types(&[ast::TypeDecl {
+            name: "Option".to_string(),
+            arity: 1,
+            constructors: vec![
+                ("None".to_string(), vec![]),
+                ("Some".to_string(), vec![TypeExpr::Var(0, false)]),
+            ],
+        }]);
+        let pattern = |kind| ast::Pattern {
+            kind,
+            span: (0..1).into(),
+        };
+        let expr = |kind| ast::Expr {
+            kind,
+            span: (0..1).into(),
+        };
+        let one = || expr(ast::ExprKind::Literal(ast::Literal::Int(1)));
+        let some_one = || expr(ast::ExprKind::Constructor(TypeId(0), 1, vec![one()]));
+        let some = |patterns| pattern(ast::PatternKind::Constructor(TypeId(0), 1, patterns));
+        let none = |patterns| pattern(ast::PatternKind::Constructor(TypeId(0), 0, patterns));
+        let variable = || pattern(ast::PatternKind::Variable);
+
+        // let Option::Some x = Option::Some 1; x
+        assert!(matches!(
+            checker.algorithm_j(&expr(ast::ExprKind::LetIn(
+                false,
+                some(vec![variable()]),
+                Box::new(some_one()),
+                Box::new(bound_variable(0)),
+            ))),
+            Err(TypeError::PatternContainsConstructors { .. })
+        ));
+        // let (Option::Some x, y) = (Option::Some 1, 1); x
+        assert!(matches!(
+            checker.algorithm_j(&expr(ast::ExprKind::LetIn(
+                false,
+                pattern(ast::PatternKind::Tuple(vec![
+                    some(vec![variable()]),
+                    variable()
+                ])),
+                Box::new(expr(ast::ExprKind::Tuple(vec![some_one(), one()]))),
+                Box::new(bound_variable(1)),
+            ))),
+            Err(TypeError::PatternContainsConstructors { .. })
+        ));
+        // let rec Option::Some x = Option::Some 1; x
+        assert!(matches!(
+            checker.algorithm_j(&expr(ast::ExprKind::LetIn(
+                true,
+                some(vec![variable()]),
+                Box::new(some_one()),
+                Box::new(bound_variable(0)),
+            ))),
+            Err(TypeError::PatternContainsConstructors { .. })
+        ));
+
+        // match Option::Some 1 { <pattern> => 1 }
+        let arity = |checker: &mut TypeChecker, p| match checker.algorithm_j(&expr(
+            ast::ExprKind::Match(Box::new(some_one()), vec![(p, one())]),
+        )) {
+            Err(TypeError::WrongConstructorArity {
+                expected, actual, ..
+            }) => Some((expected, actual)),
+            _ => None,
+        };
+        // Option::Some
+        assert_eq!(arity(&mut checker, some(vec![])), Some((1, 0)));
+        // Option::Some x y
+        assert_eq!(
+            arity(&mut checker, some(vec![variable(), variable()])),
+            Some((1, 2))
+        );
+        // Option::None x
+        assert_eq!(arity(&mut checker, none(vec![variable()])), Some((0, 1)));
     }
 }
