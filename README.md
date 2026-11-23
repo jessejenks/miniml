@@ -36,8 +36,9 @@ It features:
 - A [small C runtime](runtime/runtime.c) with a non-moving mark-sweep garbage collector that scans the native stack
   conservatively and the argument stack precisely
 - A reference call-by-value interpreter that the compiled code is tested against
-- Pattern matching on literals and tuples, compiled to decision trees using Jules Jacobs' algorithm[^5], with
-  non-exhaustive matches reported as compile errors
+- Algebraic data types, which can be polymorphic and recursive
+- Pattern matching on literals, tuples, and constructors, compiled to decision trees using Jules Jacobs' algorithm[^5],
+  with non-exhaustive matches reported as compile errors
 
 Compared to the initial runtime (`5707e42`), I've already improved performance of benchmark programs at `-O0` to
 
@@ -46,6 +47,10 @@ Compared to the initial runtime (`5707e42`), I've already improved performance o
 - run ~4.9x faster.
 
 See [the benchmarks section](#benchmarks) below for more details.
+
+## Documentation
+
+- [The language](docs/language.md): a short tour of the syntax and features, with examples
 
 ## Usage
 
@@ -188,7 +193,7 @@ miniml fib.mml -i
 Prints inferred top-level declarations and type of entire program.
 
 ```
-fib : Int -> (Int × Int) -> Int
+fib : Int -> (Int, Int) -> Int
 result : Int
 - : Int
 ```
@@ -373,7 +378,8 @@ $CC fib.ll runtime/runtime.c -o fib
 
 ## Internals
 
-Values are 64-bit words with 63-bit tagged integers or pointers to heap-allocated objects. Following the ZINC paper and OCaml, each object has a header word.
+Values are 64-bit words with 63-bit tagged integers or pointers to heap-allocated objects. Following the ZINC paper and
+OCaml, each object has a header word.
 
 Like my existing WebAssembly version[^3], the environment is a heap-allocated list, and closures are pairs of code
 pointers and environments. But this project includes several optimizations, and manages its own garbage collection.
@@ -436,10 +442,11 @@ Notes:
 - [x] Garbage collection
 - [x] Strings and characters
 - [x] Tuple types
-- [ ] Algebraic data types
+- [x] Algebraic data types
 - Pattern matching
   - [x] Tuples
-  - [ ] ADTs
+  - [x] ADTs
+- [ ] Nicer type errors
 
 ---
 
