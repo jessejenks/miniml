@@ -1,4 +1,9 @@
-use std::{cmp, collections::HashMap, fmt::Display, rc::Rc};
+use std::{
+    cmp,
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    rc::Rc,
+};
 
 use miette::{Diagnostic, SourceSpan};
 use thiserror::Error;
@@ -225,6 +230,7 @@ type Result<T> = std::result::Result<T, TypeError>;
 pub struct TypeChecker {
     env: HashMap<String, Scheme>,
     constructors: Vec<Vec<Scheme>>,
+    fields: Vec<Vec<Vec<TypeExpr>>>,
     context: Vec<Scheme>,
     substitution: Vec<Option<TypeExpr>>,
     bindings: Vec<(ast::Span, Scheme)>,
@@ -238,6 +244,7 @@ impl TypeChecker {
         Self {
             env: HashMap::new(),
             constructors: Vec::new(),
+            fields: Vec::new(),
             context: Vec::new(),
             substitution: Vec::new(),
             bindings: Vec::new(),
@@ -274,6 +281,12 @@ impl TypeChecker {
                 })
                 .collect();
             self.constructors.push(schemes);
+            self.fields.push(
+                decl.constructors
+                    .iter()
+                    .map(|(_, fields)| fields.clone())
+                    .collect(),
+            );
         }
     }
 
@@ -633,6 +646,18 @@ impl TypeChecker {
                 self.eq[idx] = true;
                 Ok(())
             }
+            TypeExpr::Named(id, elts) => {
+                if !self.fields_allow_equality(id, &mut HashSet::new()) {
+                    return Err(TypeError::Equality {
+                        tp: TypeExpr::Named(id, elts).to_string(),
+                        span: span.into(),
+                    });
+                }
+                for e in elts.iter() {
+                    self.require_equality(span, e.clone())?;
+                }
+                Ok(())
+            }
             TypeExpr::Product(elts) => {
                 for e in elts.iter() {
                     self.require_equality(span, e.clone())?;
@@ -643,6 +668,36 @@ impl TypeChecker {
                 tp: other.to_string(),
                 span: span.into(),
             }),
+        }
+    }
+
+    fn fields_allow_equality(&self, id: TypeId, visited: &mut HashSet<usize>) -> bool {
+        if !visited.insert(id.0) {
+            return true;
+        }
+        let Some(ctors) = self.fields.get(id.0) else {
+            return false;
+        };
+        ctors
+            .iter()
+            .flatten()
+            .all(|tp| self.field_allows_equality(tp, visited))
+    }
+
+    fn field_allows_equality(&self, tp: &TypeExpr, visited: &mut HashSet<usize>) -> bool {
+        match tp {
+            TypeExpr::Unit
+            | TypeExpr::Bool
+            | TypeExpr::Char
+            | TypeExpr::Int
+            | TypeExpr::String
+            | TypeExpr::Var(_, _) => true,
+            TypeExpr::Product(elts) => elts.iter().all(|e| self.field_allows_equality(e, visited)),
+            TypeExpr::Named(id, elts) => {
+                elts.iter().all(|e| self.field_allows_equality(e, visited))
+                    && self.fields_allow_equality(*id, visited)
+            }
+            TypeExpr::Arrow(_, _) | TypeExpr::UnifVar(_) => false,
         }
     }
 
@@ -1058,11 +1113,40 @@ mod tests {
             );
         }
 
-        // todo eq on named types
-        assert!(matches!(
-            check("Option::None == Option::None"),
-            Err(TypeError::Equality { .. })
-        ));
+        // equality
+        assert_eq!(check("Option::None == Option::None").unwrap(), "Bool");
+        assert_eq!(check("Option::Some 1 == Option::Some 2").unwrap(), "Bool");
+        assert_eq!(
+            // has to unify List Int with ∀α. (List α)
+            check("List::Cons 1 List::Nil == List::Nil").unwrap(),
+            "Bool"
+        );
+        // mutual recursion
+        assert_eq!(
+            check(
+                "type A = A B | X;
+                 type B = B A | Y;
+                 A::X == A::X"
+            )
+            .unwrap(),
+            "Bool"
+        );
+
+        for source in [
+            "type F a = F (a -> a);
+             let f = fun x => x;
+             F::F f == F::F f",
+            "type G = G (Option (Int -> Int));
+             G::G Option::None == G::G Option::None",
+            "type A = A B | X;
+             type B = B A (Int -> Int);
+             A::X == A::X",
+        ] {
+            assert!(
+                matches!(check(source), Err(TypeError::Equality { .. })),
+                "{source}"
+            );
+        }
     }
 
     #[test]

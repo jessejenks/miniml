@@ -211,6 +211,31 @@ fn compiles_expressions() {
     3
     ",
     );
+    // tuple/constructor equality
+    agrees("if (1, 2, 3) == (1, 2, 3) then 1 else 2");
+    agrees("if (1, 2, 3) == (1, 2, 4) then 1 else 2");
+    agrees(
+        "type Triple a b c
+           = Triple a b c;
+         if Triple::Triple 1 2 3 == Triple::Triple 1 2 3 then 1 else 2",
+    );
+    agrees(
+        "type Triple a b c
+           = Triple a b c;
+         if Triple::Triple 1 2 3 == Triple::Triple 1 2 4 then 1 else 2",
+    );
+    agrees(
+        "type Option t
+           = None
+           | Some t;
+         if Option::Some 1 == Option::None then 1 else 2",
+    );
+    agrees(
+        "type List t
+           = Nil
+           | Cons t (List t);
+         if List::Cons 1 List::Nil == List::Nil then 1 else 2",
+    );
 }
 
 #[test]

@@ -423,7 +423,7 @@ int64_t miniml_equal(uint64_t left, uint64_t right) {
     if (header_tag(p[-1]) == STRING_TAG) {
         return memcmp(p, q, size * sizeof(uint64_t)) == 0;
     }
-    if (header_tag(p[-1]) == TUPLE_TAG) {
+    if (header_tag(p[-1]) < CLOSURE_TAG) {
         for (uint64_t i = 0; i < size; i++) {
             if (!miniml_equal(p[i], q[i])) {
                 return 0;

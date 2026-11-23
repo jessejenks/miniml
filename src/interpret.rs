@@ -449,33 +449,12 @@ fn cbv(expr: Expr) -> Expr {
                     Expr::Literal(ast::Literal::Int(a)),
                     Expr::Literal(ast::Literal::Int(b)),
                 ) => Expr::Literal(ast::Literal::Bool(a >= b)),
-                (
-                    ast::BinaryOp::Eq,
-                    Expr::Literal(ast::Literal::Unit),
-                    Expr::Literal(ast::Literal::Unit),
-                ) => Expr::Literal(ast::Literal::Bool(true)),
-                (
-                    ast::BinaryOp::Eq,
-                    Expr::Literal(ast::Literal::Bool(a)),
-                    Expr::Literal(ast::Literal::Bool(b)),
-                ) => Expr::Literal(ast::Literal::Bool(a == b)),
-                (
-                    ast::BinaryOp::Eq,
-                    Expr::Literal(ast::Literal::Char(a)),
-                    Expr::Literal(ast::Literal::Char(b)),
-                ) => Expr::Literal(ast::Literal::Bool(a == b)),
-                (
-                    ast::BinaryOp::Eq,
-                    Expr::Literal(ast::Literal::Int(a)),
-                    Expr::Literal(ast::Literal::Int(b)),
-                ) => Expr::Literal(ast::Literal::Bool(a == b)),
-                (
-                    ast::BinaryOp::Eq,
-                    Expr::Literal(ast::Literal::String(a)),
-                    Expr::Literal(ast::Literal::String(b)),
-                ) => Expr::Literal(ast::Literal::Bool(a == b)),
-                (ast::BinaryOp::Eq, Expr::Tuple(a), Expr::Tuple(b)) => {
-                    Expr::Literal(ast::Literal::Bool(a == b))
+                (ast::BinaryOp::Eq, a, b) => {
+                    if let Some(are_equal) = values_equal(&a, &b) {
+                        Expr::Literal(ast::Literal::Bool(are_equal))
+                    } else {
+                        Expr::Binary(ast::BinaryOp::Eq, Box::new(a), Box::new(b))
+                    }
                 }
                 (
                     ast::BinaryOp::Concat,
@@ -521,6 +500,43 @@ fn cbv(expr: Expr) -> Expr {
         }
         x => x,
     }
+}
+
+fn values_equal(a: &Expr, b: &Expr) -> Option<bool> {
+    match (a, b) {
+        (Expr::Literal(ast::Literal::Unit), Expr::Literal(ast::Literal::Unit)) => Some(true),
+        (Expr::Literal(ast::Literal::Bool(a)), Expr::Literal(ast::Literal::Bool(b))) => {
+            Some(a == b)
+        }
+        (Expr::Literal(ast::Literal::Char(a)), Expr::Literal(ast::Literal::Char(b))) => {
+            Some(a == b)
+        }
+        (Expr::Literal(ast::Literal::Int(a)), Expr::Literal(ast::Literal::Int(b))) => Some(a == b),
+        (Expr::Literal(ast::Literal::String(a)), Expr::Literal(ast::Literal::String(b))) => {
+            Some(a == b)
+        }
+        (Expr::Tuple(a), Expr::Tuple(b)) if a.len() == b.len() => all_values_equal(a, b),
+        (Expr::Constructor(a_id, a_index, a_args), Expr::Constructor(b_id, b_index, b_args))
+            if a_id == b_id =>
+        {
+            if a_index != b_index {
+                return Some(false);
+            }
+            all_values_equal(a_args, b_args)
+        }
+        _ => None,
+    }
+}
+
+fn all_values_equal(a: &[Expr], b: &[Expr]) -> Option<bool> {
+    for (a, b) in a.iter().zip(b) {
+        match values_equal(a, b) {
+            None => return None,
+            Some(false) => return Some(false),
+            _ => {}
+        }
+    }
+    Some(true)
 }
 
 fn stuck_application(left: Expr, right: Expr) -> Expr {
@@ -667,5 +683,76 @@ mod tests {
         assert_eq!(interp("boolToStr true").to_string(), "\"true\"");
         assert_eq!(interp("charToStr 'a'").to_string(), "\"a\"");
         assert_eq!(interp("intToStr 123").to_string(), "\"123\"");
+        // tuple/constructor equality
+        assert_eq!(interp("(1, 2, 3) == (1, 2, 3)").to_string(), "true");
+        assert_eq!(interp("(1, 2, 3) == (1, 2, 4)").to_string(), "false");
+        assert_eq!(
+            interp("(1, 2, 3) == (1, 2)").to_string(),
+            "(== (1, 2, 3) (1, 2))"
+        );
+        assert_eq!(
+            interp("(1, 2, 3) == (1, 2, 3, 4)").to_string(),
+            "(== (1, 2, 3) (1, 2, 3, 4))"
+        );
+        assert_eq!(
+            interp("(1, 2, 3) == (1, '2', ())").to_string(),
+            "(== (1, 2, 3) (1, '2', ()))"
+        );
+        assert_eq!(
+            interp(
+                "
+            type Triple a b c
+                = Triple a b c;
+            Triple::Triple 1 2 3 == Triple::Triple 1 2 3"
+            )
+            .to_string(),
+            "true"
+        );
+        assert_eq!(
+            interp(
+                "
+            type Triple a b c
+                = Triple a b c;
+            Triple::Triple 1 2 3 == Triple::Triple 1 2 4"
+            )
+            .to_string(),
+            "false"
+        );
+        assert_eq!(
+            interp(
+                "
+            type Option t
+                = None
+                | Some t;
+            Option::Some 1 == Option::None"
+            )
+            .to_string(),
+            "false"
+        );
+        assert_eq!(
+            interp(
+                "
+            type Option t
+                = None
+                | Some t;
+            type Either a b
+                = Left a
+                | Right b;
+            Option::Some 'a' == Either::Right 'a'"
+            )
+            .to_string(),
+            "(== T_0::[1]('a') T_1::[1]('a'))"
+        );
+        assert_eq!(
+            interp(
+                "
+            type List t
+                = Nil
+                | Cons t (List t);
+            List::Cons 1 List::Nil == List::Nil"
+            )
+            .to_string(),
+            "false"
+        );
     }
 }
