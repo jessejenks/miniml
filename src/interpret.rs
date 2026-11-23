@@ -7,6 +7,7 @@ pub enum Pattern {
     Wild,
     Variable,
     Tuple(Vec<Pattern>),
+    Constructor(typecheck::TypeId, usize, Vec<Pattern>),
 }
 
 impl Display for Pattern {
@@ -24,6 +25,20 @@ impl Display for Pattern {
                     write!(f, "{p}")?;
                 }
                 write!(f, ")")
+            }
+            Pattern::Constructor(id, index, args) => {
+                write!(f, "T_{}::[{index}]", id.0)?;
+                if !args.is_empty() {
+                    write!(f, "(")?;
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{arg}")?;
+                    }
+                    write!(f, ")")?;
+                }
+                Ok(())
             }
         }
     }
@@ -149,7 +164,9 @@ fn to_spanless_pattern(pattern: &ast::Pattern) -> Pattern {
         ast::PatternKind::Tuple(patterns) => {
             Pattern::Tuple(patterns.iter().map(to_spanless_pattern).collect())
         }
-        ast::PatternKind::Constructor(_, _, _) => todo!(),
+        ast::PatternKind::Constructor(id, index, args) => {
+            Pattern::Constructor(*id, *index, args.iter().map(to_spanless_pattern).collect())
+        }
     }
 }
 
@@ -157,7 +174,9 @@ fn leaf_count(pattern: &Pattern) -> i64 {
     match pattern {
         Pattern::Literal(_) => 0,
         Pattern::Wild | Pattern::Variable => 1,
-        Pattern::Tuple(patterns) => patterns.iter().fold(0, |acc, curr| acc + leaf_count(curr)),
+        Pattern::Tuple(patterns) | Pattern::Constructor(_, _, patterns) => {
+            patterns.iter().fold(0, |acc, curr| acc + leaf_count(curr))
+        }
     }
 }
 
@@ -172,6 +191,14 @@ fn get_leaves(pattern: &Pattern, value: &Expr, out: &mut Vec<Expr>) -> bool {
             patterns
                 .iter()
                 .zip(elements)
+                .all(|(p, v)| get_leaves(p, v, out))
+        }
+        (Pattern::Constructor(p_id, p_index, patterns), Expr::Constructor(e_id, e_index, args))
+            if p_id == e_id && p_index == e_index && patterns.len() == args.len() =>
+        {
+            patterns
+                .iter()
+                .zip(args)
                 .all(|(p, v)| get_leaves(p, v, out))
         }
         _ => false,
@@ -663,6 +690,38 @@ mod tests {
             // stuck, non-exhaustive match
             interp("match 1 { 2 => 3 }").to_string(),
             "(match 1 { 2 => 3 })"
+        );
+        assert_eq!(
+            interp(
+                "type Foo = Foo Int;
+                 match Foo::Foo 1 { Foo::Foo n => n }"
+            )
+            .to_string(),
+            "1"
+        );
+        assert_eq!(
+            interp(
+                "type List t = Nil | Cons t (List t);
+                 match List::Cons 2 (List::Cons 3 List::Nil) {
+                   List::Nil => 0,
+                   List::Cons n List::Nil => n,
+                   List::Cons n (List::Cons m List::Nil) => n - m,
+                   List::Cons n _ => -2,
+                 }"
+            )
+            .to_string(),
+            "-1"
+        );
+        assert_eq!(
+            interp(
+                "type List t = Nil | Cons t (List t);
+                 let k = 100;
+                 match (List::Cons 1 List::Nil, 2) {
+                   (List::Cons a _, b) => (a - b) * k
+                 }"
+            )
+            .to_string(),
+            "-100"
         );
         // builtins
         assert_eq!(interp("print ()").to_string(), "(print ())");
